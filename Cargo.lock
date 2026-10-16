@@ -4701,6 +4701,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "photocraft-beauty"
+version = "0.9.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "photocraft-cli"
 version = "0.9.0"
 dependencies = [
