@@ -10,7 +10,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+photocraft-color = { workspace = true }
 serde = { workspace = true }
-
 [dev-dependencies]
 serde_json = { workspace = true }

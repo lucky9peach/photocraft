@@ -4704,6 +4704,7 @@ dependencies = [
 name = "photocraft-beauty"
 version = "0.9.0"
 dependencies = [
+ "photocraft-color",
  "serde",
  "serde_json",
 ]

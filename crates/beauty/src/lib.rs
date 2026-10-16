@@ -10,10 +10,11 @@
 #![deny(clippy::todo)]
 #![deny(clippy::unreachable)]
 
+pub mod light;
 pub mod mask;
 pub mod params;
-
-pub use params::{BeautifyParams, BUILTIN_ORDER, PRESETS};
+pub mod skin;
+pub mod warp;
 
 use core::fmt;
 
