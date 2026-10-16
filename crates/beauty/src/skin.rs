@@ -24,18 +24,10 @@ fn check_image(img: &[f32], w: usize, h: usize, ch: usize, what: &'static str) -
     if w == 0 || h == 0 || ch == 0 {
         return Err(Error::EmptyInput(what));
     }
-    let pixels = w.checked_mul(h).ok_or_else(|| Error::InvalidParam(
-        "image dimensions overflow".to_string(),
-    ))?;
-    let expected = pixels.checked_mul(ch).ok_or_else(|| Error::InvalidParam(
-        "image dimensions overflow".to_string(),
-    ))?;
+    let pixels = w.checked_mul(h).ok_or_else(|| Error::InvalidParam("image dimensions overflow".to_string()))?;
+    let expected = pixels.checked_mul(ch).ok_or_else(|| Error::InvalidParam("image dimensions overflow".to_string()))?;
     if img.len() != expected {
-        return Err(Error::ShapeMismatch {
-            what,
-            expected,
-            found: img.len(),
-        });
+        return Err(Error::ShapeMismatch { what, expected, found: img.len() });
     }
     Ok(())
 }
@@ -56,20 +48,9 @@ fn put_plane(img: &mut [f32], w: usize, h: usize, ch: usize, c: usize, plane: &[
 
 /// Guided filter (He et al. 2010), O(1) per pixel: smooths `src` while
 /// following edges of `guide`. Both are single-channel `w*h` buffers.
-pub fn guided_filter(
-    guide: &[f32],
-    src: &[f32],
-    w: usize,
-    h: usize,
-    radius: usize,
-    eps: f32,
-) -> Result<Vec<f32>, Error> {
+pub fn guided_filter(guide: &[f32], src: &[f32], w: usize, h: usize, radius: usize, eps: f32) -> Result<Vec<f32>, Error> {
     if guide.len() != w * h || src.len() != w * h {
-        return Err(Error::ShapeMismatch {
-            what: "guided_filter input",
-            expected: w * h,
-            found: guide.len().min(src.len()),
-        });
+        return Err(Error::ShapeMismatch { what: "guided_filter input", expected: w * h, found: guide.len().min(src.len()) });
     }
     if !eps.is_finite() || eps < 0.0 {
         return Err(Error::InvalidParam("guided eps must be finite >= 0".into()));
@@ -91,12 +72,7 @@ pub fn guided_filter(
     }
     let mean_a = feather_box(&a, w, h, radius)?;
     let mean_b = feather_box(&b, w, h, radius)?;
-    Ok(guide
-        .iter()
-        .zip(mean_a.iter())
-        .zip(mean_b.iter())
-        .map(|((g, ma), mb)| ma * g + mb)
-        .collect())
+    Ok(guide.iter().zip(mean_a.iter()).zip(mean_b.iter()).map(|((g, ma), mb)| ma * g + mb).collect())
 }
 
 /// Edge-preserving skin smoothing inside `skin_mask`.
@@ -113,14 +89,7 @@ pub struct SmoothSpec {
     pub eps: f32,
 }
 
-pub fn smooth_skin(
-    img: &[f32],
-    w: usize,
-    h: usize,
-    ch: usize,
-    skin_mask: &[f32],
-    spec: &SmoothSpec,
-) -> Result<Vec<f32>, Error> {
+pub fn smooth_skin(img: &[f32], w: usize, h: usize, ch: usize, skin_mask: &[f32], spec: &SmoothSpec) -> Result<Vec<f32>, Error> {
     check_image(img, w, h, ch, "smooth_skin input")?;
     let strength = spec.strength;
     let texture_keep = spec.texture_keep;
@@ -130,11 +99,7 @@ pub fn smooth_skin(
     if s <= 0.0 {
         return Ok(img.to_vec());
     }
-    let keep = if texture_keep.is_finite() {
-        texture_keep.clamp(0.0, 1.0)
-    } else {
-        0.7
-    };
+    let keep = if texture_keep.is_finite() { texture_keep.clamp(0.0, 1.0) } else { 0.7 };
     let detail_w = keep * 0.5;
     let color_ch = if ch >= 3 { 3 } else { 1 };
     let mut smoothed = img.to_vec();
@@ -151,15 +116,7 @@ pub fn smooth_skin(
 }
 
 /// Pulls Lab a/b channels toward their local mean inside the mask (RGB only).
-pub fn uniform_tone(
-    img: &[f32],
-    w: usize,
-    h: usize,
-    ch: usize,
-    skin_mask: &[f32],
-    strength: f32,
-    radius: usize,
-) -> Result<Vec<f32>, Error> {
+pub fn uniform_tone(img: &[f32], w: usize, h: usize, ch: usize, skin_mask: &[f32], strength: f32, radius: usize) -> Result<Vec<f32>, Error> {
     check_image(img, w, h, ch, "uniform_tone input")?;
     let s = if strength.is_finite() { strength.clamp(0.0, 1.0) } else { 0.0 };
     if s <= 0.0 || ch < 3 {
@@ -229,14 +186,7 @@ fn max3(src: &[f32], w: usize, h: usize) -> Vec<f32> {
 
 /// Fades small high-contrast spots: dual-scale box background, threshold,
 /// 3x3 open + dilate, then blends a blurred copy only on the spots.
-pub fn fade_blemishes(
-    img: &[f32],
-    w: usize,
-    h: usize,
-    ch: usize,
-    skin_mask: &[f32],
-    strength: f32,
-) -> Result<Vec<f32>, Error> {
+pub fn fade_blemishes(img: &[f32], w: usize, h: usize, ch: usize, skin_mask: &[f32], strength: f32) -> Result<Vec<f32>, Error> {
     check_image(img, w, h, ch, "fade_blemishes input")?;
     let s = if strength.is_finite() { strength.clamp(0.0, 1.0) } else { 0.0 };
     if s <= 0.0 {
@@ -260,17 +210,9 @@ pub fn fade_blemishes(
     let dilated = max3(&opened, w, h);
     let feathered = feather_box(&dilated, w, h, 2)?;
     if skin_mask.len() != w * h {
-        return Err(Error::ShapeMismatch {
-            what: "fade_blemishes mask",
-            expected: w * h,
-            found: skin_mask.len(),
-        });
+        return Err(Error::ShapeMismatch { what: "fade_blemishes mask", expected: w * h, found: skin_mask.len() });
     }
-    let spot_mask: Vec<f32> = feathered
-        .iter()
-        .zip(skin_mask.iter())
-        .map(|(a, b)| (a * b).clamp(0.0, 1.0))
-        .collect();
+    let spot_mask: Vec<f32> = feathered.iter().zip(skin_mask.iter()).map(|(a, b)| (a * b).clamp(0.0, 1.0)).collect();
     if spot_mask.iter().fold(0.0f32, |m, v| m.max(*v)) <= 0.0 {
         return Ok(img.to_vec());
     }
@@ -364,9 +306,7 @@ mod tests {
         }
         let mask = vec![1.0f32; 16 * 8];
         let spread = |v: &[f32]| {
-            let labs: Vec<[f32; 3]> = (0..16 * 8)
-                .map(|i| srgb_to_lab([v[i * 3], v[i * 3 + 1], v[i * 3 + 2]]))
-                .collect();
+            let labs: Vec<[f32; 3]> = (0..16 * 8).map(|i| srgb_to_lab([v[i * 3], v[i * 3 + 1], v[i * 3 + 2]])).collect();
             let ma = labs.iter().map(|l| l[1]).sum::<f32>() / labs.len() as f32;
             let mb = labs.iter().map(|l| l[2]).sum::<f32>() / labs.len() as f32;
             labs.iter().map(|l| (l[1] - ma).abs() + (l[2] - mb).abs()).sum::<f32>()

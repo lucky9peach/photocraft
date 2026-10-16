@@ -10,11 +10,18 @@
 #![deny(clippy::todo)]
 #![deny(clippy::unreachable)]
 
+#[cfg(target_vendor = "apple")]
+pub mod apple;
+#[cfg(feature = "onnx")]
+pub mod detect;
+pub mod geom;
 pub mod light;
 pub mod mask;
 pub mod params;
 pub mod skin;
 pub mod warp;
+
+pub use params::{BUILTIN_ORDER, BeautifyParams, PRESETS};
 
 use core::fmt;
 
@@ -24,11 +31,7 @@ pub enum Error {
     /// A parameter name or value is invalid.
     InvalidParam(String),
     /// A buffer length does not match its declared geometry.
-    ShapeMismatch {
-        what: &'static str,
-        expected: usize,
-        found: usize,
-    },
+    ShapeMismatch { what: &'static str, expected: usize, found: usize },
     /// An input is empty where at least one element is required.
     EmptyInput(&'static str),
 }
@@ -37,10 +40,7 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::InvalidParam(msg) => write!(f, "invalid param: {msg}"),
-            Error::ShapeMismatch { what, expected, found } => write!(
-                f,
-                "shape mismatch for {what}: expected {expected} samples, found {found}"
-            ),
+            Error::ShapeMismatch { what, expected, found } => write!(f, "shape mismatch for {what}: expected {expected} samples, found {found}"),
             Error::EmptyInput(what) => write!(f, "empty input: {what}"),
         }
     }

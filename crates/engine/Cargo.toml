@@ -25,6 +25,9 @@ thiserror = { workspace = true }
 rayon = { workspace = true }
 photocraft-paint = { workspace = true }
 photocraft-algo = { workspace = true }
+# Portrait beautification (Filter › Beautify). No `onnx` feature: the engine
+# uses Apple Vision on macOS and needs no tract runtime (keeps wasm lean).
+photocraft-beauty = { workspace = true, default-features = false }
 photocraft-text = { workspace = true }
 photocraft-vector = { workspace = true }
 photocraft-io = { workspace = true }

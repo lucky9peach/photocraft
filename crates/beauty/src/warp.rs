@@ -37,13 +37,9 @@ fn check_field_dims(w: usize, h: usize) -> Result<usize, Error> {
     if w == 0 || h == 0 {
         return Err(Error::EmptyInput("warp field dimensions"));
     }
-    let pixels = w.checked_mul(h).ok_or_else(|| Error::InvalidParam(
-        "warp field dimensions overflow".to_string(),
-    ))?;
+    let pixels = w.checked_mul(h).ok_or_else(|| Error::InvalidParam("warp field dimensions overflow".to_string()))?;
     if pixels > MAX_PIXELS {
-        return Err(Error::InvalidParam(format!(
-            "warp field too large: {pixels} pixels"
-        )));
+        return Err(Error::InvalidParam(format!("warp field too large: {pixels} pixels")));
     }
     Ok(pixels)
 }
@@ -68,7 +64,7 @@ pub struct PullSpec {
     pub radius: f32,
 }
 
-/// Elliptical squeeze about a centre.
+/// Elliptical squeeze about a centre, optionally rotated.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SqueezeSpec {
     pub cx: f32,
@@ -77,6 +73,8 @@ pub struct SqueezeSpec {
     pub ry: f32,
     pub strength: f32,
     pub horizontal: bool,
+    /// Rotation of the squeeze frame in radians (0 = axis-aligned).
+    pub angle_rad: f32,
 }
 
 /// Limb-segment stretch from joint A to joint B.
@@ -93,12 +91,7 @@ pub struct StretchSpec {
 impl Field {
     pub fn new(w: usize, h: usize) -> Result<Self, Error> {
         let pixels = check_field_dims(w, h)?;
-        Ok(Self {
-            w,
-            h,
-            dx: vec![0.0; pixels],
-            dy: vec![0.0; pixels],
-        })
+        Ok(Self { w, h, dx: vec![0.0; pixels], dy: vec![0.0; pixels] })
     }
 
     pub fn dims(&self) -> (usize, usize) {
@@ -115,21 +108,14 @@ impl Field {
 
     /// Maximum absolute offset anywhere in the field.
     pub fn max_abs(&self) -> f32 {
-        self.dx
-            .iter()
-            .chain(self.dy.iter())
-            .fold(0.0f32, |m, v| m.max(v.abs()))
+        self.dx.iter().chain(self.dy.iter()).fold(0.0f32, |m, v| m.max(v.abs()))
     }
 
     fn check_mask(&self, mask: Option<&[f32]>) -> Result<(), Error> {
         if let Some(m) = mask {
             let expected = self.dx.len();
             if m.len() != expected {
-                return Err(Error::ShapeMismatch {
-                    what: "warp gate mask",
-                    expected,
-                    found: m.len(),
-                });
+                return Err(Error::ShapeMismatch { what: "warp gate mask", expected, found: m.len() });
             }
         }
         Ok(())
@@ -142,24 +128,17 @@ impl Field {
         }
     }
 
-    /// Radial scale about `(cx, cy)`: `strength` in 0..1 enlarges up to ~18%.
-    /// `mask` (same dims, 0..1) optionally gates the effect per pixel.
-    pub fn add_radial_scale(
-        &mut self,
-        cx: f32,
-        cy: f32,
-        radius: f32,
-        strength: f32,
-        mask: Option<&[f32]>,
-    ) -> Result<(), Error> {
+    /// Radial scale about `(cx, cy)`: `strength` in -1..1, positive enlarges
+    /// (up to ~18%), negative shrinks. `mask` optionally gates per pixel.
+    pub fn add_radial_scale(&mut self, cx: f32, cy: f32, radius: f32, strength: f32, mask: Option<&[f32]>) -> Result<(), Error> {
         if ![cx, cy, radius, strength].iter().all(|v| v.is_finite()) {
             return Err(Error::InvalidParam("radial scale args must be finite".into()));
         }
         self.check_mask(mask)?;
-        if strength <= 0.0 || radius <= 2.0 {
+        if strength == 0.0 || radius <= 2.0 {
             return Ok(());
         }
-        let k = 0.18 * strength.clamp(0.0, 1.0);
+        let k = 0.18 * strength.clamp(-1.0, 1.0);
         let x0 = (cx - radius).max(0.0) as usize;
         let x1 = ((cx + radius).min(self.w as f32).ceil() as usize).min(self.w);
         let y0 = (cy - radius).max(0.0) as usize;
@@ -218,8 +197,8 @@ impl Field {
     /// Elliptical squeeze about `(cx, cy)`: `strength` in 0..1 compresses
     /// horizontally (or vertically) up to ~10% at the centre.
     pub fn add_axis_squeeze(&mut self, spec: &SqueezeSpec, mask: Option<&[f32]>) -> Result<(), Error> {
-        let SqueezeSpec { cx, cy, rx, ry, strength, horizontal } = *spec;
-        if ![cx, cy, rx, ry, strength].iter().all(|v| v.is_finite()) {
+        let SqueezeSpec { cx, cy, rx, ry, strength, horizontal, angle_rad } = *spec;
+        if ![cx, cy, rx, ry, strength, angle_rad].iter().all(|v| v.is_finite()) {
             return Err(Error::InvalidParam("squeeze args must be finite".into()));
         }
         self.check_mask(mask)?;
@@ -227,24 +206,30 @@ impl Field {
             return Ok(());
         }
         let k = 0.10 * strength.clamp(0.0, 1.0);
-        let x0 = (cx - rx).max(0.0) as usize;
-        let x1 = ((cx + rx).min(self.w as f32).ceil() as usize).min(self.w);
-        let y0 = (cy - ry).max(0.0) as usize;
-        let y1 = ((cy + ry).min(self.h as f32).ceil() as usize).min(self.h);
+        // Bounding circle of the rotated ellipse.
+        let ext = rx.hypot(ry);
+        let (sin, cos) = angle_rad.sin_cos();
+        let x0 = (cx - ext).max(0.0) as usize;
+        let x1 = ((cx + ext).min(self.w as f32).ceil() as usize).min(self.w);
+        let y0 = (cy - ext).max(0.0) as usize;
+        let y1 = ((cy + ext).min(self.h as f32).ceil() as usize).min(self.h);
         for y in y0..y1 {
             for x in x0..x1 {
-                let nx = (x as f32 + 0.5 - cx) / rx;
-                let ny = (y as f32 + 0.5 - cy) / ry;
-                let f = falloff(nx.hypot(ny), 1.0);
+                let ox = x as f32 + 0.5 - cx;
+                let oy = y as f32 + 0.5 - cy;
+                // Into the rotated frame; squeeze runs along its x-axis when
+                // `horizontal`, else its y-axis.
+                let lx = ox * cos + oy * sin;
+                let ly = -ox * sin + oy * cos;
+                let f = falloff((lx / rx).hypot(ly / ry), 1.0);
                 if f > 0.0 {
                     let idx = y * self.w + x;
                     let g = self.gate(mask, idx) * f * k;
                     // Sample outward from the axis => content narrows.
-                    if horizontal {
-                        self.dx[idx] += (x as f32 + 0.5 - cx) * g;
-                    } else {
-                        self.dy[idx] += (y as f32 + 0.5 - cy) * g;
-                    }
+                    let (sx, sy) = if horizontal { (lx, 0.0) } else { (0.0, ly) };
+                    // Back to image axes (inverse rotation).
+                    self.dx[idx] += (sx * cos - sy * sin) * g;
+                    self.dy[idx] += (sx * sin + sy * cos) * g;
                 }
             }
         }
@@ -313,15 +298,9 @@ impl Field {
             return Err(Error::EmptyInput("remap channels"));
         }
         let pixels = self.dx.len();
-        let expected = pixels.checked_mul(channels).ok_or_else(|| Error::InvalidParam(
-            "remap dimensions overflow".to_string(),
-        ))?;
+        let expected = pixels.checked_mul(channels).ok_or_else(|| Error::InvalidParam("remap dimensions overflow".to_string()))?;
         if src.len() != expected {
-            return Err(Error::ShapeMismatch {
-                what: "remap src",
-                expected,
-                found: src.len(),
-            });
+            return Err(Error::ShapeMismatch { what: "remap src", expected, found: src.len() });
         }
         if self.max_abs() == 0.0 {
             return Ok(src.to_vec());
@@ -346,10 +325,7 @@ impl Field {
                     let p10 = src[(y0 * self.w + x1) * channels + c];
                     let p01 = src[(y1 * self.w + x0) * channels + c];
                     let p11 = src[(y1 * self.w + x1) * channels + c];
-                    out[dst + c] = p00 * (1.0 - fx) * (1.0 - fy)
-                        + p10 * fx * (1.0 - fy)
-                        + p01 * (1.0 - fx) * fy
-                        + p11 * fx * fy;
+                    out[dst + c] = p00 * (1.0 - fx) * (1.0 - fy) + p10 * fx * (1.0 - fy) + p01 * (1.0 - fx) * fy + p11 * fx * fy;
                 }
             }
         }
@@ -374,7 +350,7 @@ mod tests {
         let mut f = Field::new(16, 16).unwrap();
         f.add_radial_scale(8.0, 8.0, 6.0, 0.0, None).unwrap();
         f.add_pull(&PullSpec { x: 8.0, y: 8.0, vx: 1.0, vy: 0.0, amount: 0.0, radius: 6.0 }, None).unwrap();
-        f.add_axis_squeeze(&SqueezeSpec { cx: 8.0, cy: 8.0, rx: 5.0, ry: 8.0, strength: 0.0, horizontal: true }, None).unwrap();
+        f.add_axis_squeeze(&SqueezeSpec { cx: 8.0, cy: 8.0, rx: 5.0, ry: 8.0, strength: 0.0, horizontal: true, angle_rad: 0.0 }, None).unwrap();
         f.add_segment_stretch(&StretchSpec { ax: 8.0, ay: 2.0, bx: 8.0, by: 14.0, width: 5.0, extend: 0.0 }, None).unwrap();
         assert_eq!(f.max_abs(), 0.0);
     }
@@ -414,7 +390,7 @@ mod tests {
     fn squeeze_samples_outward_from_axis() {
         // Horizontal narrow: right of axis samples further right (positive dx).
         let mut f = Field::new(32, 32).unwrap();
-        f.add_axis_squeeze(&SqueezeSpec { cx: 16.0, cy: 16.0, rx: 8.0, ry: 10.0, strength: 1.0, horizontal: true }, None).unwrap();
+        f.add_axis_squeeze(&SqueezeSpec { cx: 16.0, cy: 16.0, rx: 8.0, ry: 10.0, strength: 1.0, horizontal: true, angle_rad: 0.0 }, None).unwrap();
         assert!(f.dx[16 * 32 + 20] > 0.01);
         assert!(f.dx[16 * 32 + 12] < -0.01);
         assert!(f.dy[16 * 32 + 20].abs() < 1e-6);

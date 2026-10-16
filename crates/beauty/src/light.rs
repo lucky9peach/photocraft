@@ -12,42 +12,23 @@ fn check_image(img: &[f32], w: usize, h: usize, ch: usize, what: &'static str) -
     if w == 0 || h == 0 || ch == 0 {
         return Err(Error::EmptyInput(what));
     }
-    let pixels = w.checked_mul(h).ok_or_else(|| Error::InvalidParam(
-        "image dimensions overflow".to_string(),
-    ))?;
-    let expected = pixels.checked_mul(ch).ok_or_else(|| Error::InvalidParam(
-        "image dimensions overflow".to_string(),
-    ))?;
+    let pixels = w.checked_mul(h).ok_or_else(|| Error::InvalidParam("image dimensions overflow".to_string()))?;
+    let expected = pixels.checked_mul(ch).ok_or_else(|| Error::InvalidParam("image dimensions overflow".to_string()))?;
     if img.len() != expected {
-        return Err(Error::ShapeMismatch {
-            what,
-            expected,
-            found: img.len(),
-        });
+        return Err(Error::ShapeMismatch { what, expected, found: img.len() });
     }
     Ok(())
 }
 
 fn check_mask(mask: &[f32], w: usize, h: usize) -> Result<(), Error> {
     if mask.len() != w * h {
-        return Err(Error::ShapeMismatch {
-            what: "light mask",
-            expected: w * h,
-            found: mask.len(),
-        });
+        return Err(Error::ShapeMismatch { what: "light mask", expected: w * h, found: mask.len() });
     }
     Ok(())
 }
 
 /// Gamma lift inside the mask; 100% strength uses gamma 0.65.
-pub fn brighten(
-    img: &[f32],
-    w: usize,
-    h: usize,
-    ch: usize,
-    face_mask: &[f32],
-    strength: f32,
-) -> Result<Vec<f32>, Error> {
+pub fn brighten(img: &[f32], w: usize, h: usize, ch: usize, face_mask: &[f32], strength: f32) -> Result<Vec<f32>, Error> {
     check_image(img, w, h, ch, "brighten input")?;
     check_mask(face_mask, w, h)?;
     let s = if strength.is_finite() { strength.clamp(0.0, 1.0) } else { 0.0 };
@@ -102,14 +83,7 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [f32; 3] {
 
 /// Saturation adjust inside the mask: `amount` in -1..1, 0 = neutral.
 /// Gray pixels are unaffected by construction.
-pub fn adjust_saturation(
-    img: &[f32],
-    w: usize,
-    h: usize,
-    ch: usize,
-    face_mask: &[f32],
-    amount: f32,
-) -> Result<Vec<f32>, Error> {
+pub fn adjust_saturation(img: &[f32], w: usize, h: usize, ch: usize, face_mask: &[f32], amount: f32) -> Result<Vec<f32>, Error> {
     check_image(img, w, h, ch, "adjust_saturation input")?;
     check_mask(face_mask, w, h)?;
     let a = if amount.is_finite() { amount.clamp(-1.0, 1.0) } else { 0.0 };
@@ -204,11 +178,7 @@ fn clahe(luma: &[f32], w: usize, h: usize, clip: f32) -> Vec<f32> {
             let v10 = sample(tx1, ty0, v);
             let v01 = sample(tx0, ty1, v);
             let v11 = sample(tx1, ty1, v);
-            out[y * w + x] = (v00 * (1.0 - fx) * (1.0 - fy)
-                + v10 * fx * (1.0 - fy)
-                + v01 * (1.0 - fx) * fy
-                + v11 * fx * fy)
-                .clamp(0.0, 1.0);
+            out[y * w + x] = (v00 * (1.0 - fx) * (1.0 - fy) + v10 * fx * (1.0 - fy) + v01 * (1.0 - fx) * fy + v11 * fx * fy).clamp(0.0, 1.0);
         }
     }
     out
@@ -216,14 +186,7 @@ fn clahe(luma: &[f32], w: usize, h: usize, clip: f32) -> Vec<f32> {
 
 /// Eye-region detail: CLAHE on luma + gentle lift, chroma-preserving
 /// (RGB scaled by the luma ratio), blended through the eye mask.
-pub fn enhance_eye_detail(
-    img: &[f32],
-    w: usize,
-    h: usize,
-    ch: usize,
-    eye_mask: &[f32],
-    strength: f32,
-) -> Result<Vec<f32>, Error> {
+pub fn enhance_eye_detail(img: &[f32], w: usize, h: usize, ch: usize, eye_mask: &[f32], strength: f32) -> Result<Vec<f32>, Error> {
     check_image(img, w, h, ch, "enhance_eye_detail input")?;
     check_mask(eye_mask, w, h)?;
     let s = if strength.is_finite() { strength.clamp(0.0, 1.0) } else { 0.0 };
@@ -249,15 +212,7 @@ pub fn enhance_eye_detail(
 }
 
 /// Unsharp-mask sharpening inside the mask.
-pub fn sharpen(
-    img: &[f32],
-    w: usize,
-    h: usize,
-    ch: usize,
-    face_mask: &[f32],
-    strength: f32,
-    radius: usize,
-) -> Result<Vec<f32>, Error> {
+pub fn sharpen(img: &[f32], w: usize, h: usize, ch: usize, face_mask: &[f32], strength: f32, radius: usize) -> Result<Vec<f32>, Error> {
     check_image(img, w, h, ch, "sharpen input")?;
     check_mask(face_mask, w, h)?;
     let s = if strength.is_finite() { strength.clamp(0.0, 1.0) } else { 0.0 };
@@ -340,9 +295,7 @@ mod tests {
         let mut img = vec![0.0f32; w * h * 3];
         for y in 0..h {
             for x in 0..w {
-                let v = 0.35
-                    + 0.3 * (x as f32 / w as f32)
-                    + 0.015 * ((x as f32 * 1.7).sin() + (y as f32 * 2.3).cos());
+                let v = 0.35 + 0.3 * (x as f32 / w as f32) + 0.015 * ((x as f32 * 1.7).sin() + (y as f32 * 2.3).cos());
                 for c in 0..3 {
                     img[(y * w + x) * 3 + c] = v;
                 }
@@ -353,8 +306,7 @@ mod tests {
         let energy = |v: &[f32]| {
             let luma: Vec<f32> = (0..w * h).map(|i| v[i * 3]).collect();
             let bg = feather_box(&luma, w, h, 3).unwrap();
-            let e: f32 = luma.iter().zip(bg.iter()).map(|(a, b)| (a - b) * (a - b)).sum::<f32>()
-                / (w * h) as f32;
+            let e: f32 = luma.iter().zip(bg.iter()).map(|(a, b)| (a - b) * (a - b)).sum::<f32>() / (w * h) as f32;
             e
         };
         let (before, after) = (energy(&img), energy(&out));

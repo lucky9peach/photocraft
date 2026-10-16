@@ -9,15 +9,9 @@ fn check_mask(mask: &[f32], width: usize, height: usize, what: &'static str) -> 
     if width == 0 || height == 0 {
         return Err(Error::EmptyInput(what));
     }
-    let expected = width.checked_mul(height).ok_or_else(|| Error::InvalidParam(
-        "mask dimensions overflow".to_string(),
-    ))?;
+    let expected = width.checked_mul(height).ok_or_else(|| Error::InvalidParam("mask dimensions overflow".to_string()))?;
     if mask.len() != expected {
-        return Err(Error::ShapeMismatch {
-            what,
-            expected,
-            found: mask.len(),
-        });
+        return Err(Error::ShapeMismatch { what, expected, found: mask.len() });
     }
     Ok(())
 }
@@ -75,11 +69,7 @@ pub fn union_max(a: &[f32], b: &[f32], width: usize, height: usize) -> Result<Ve
 pub fn subtract(base: &[f32], cut: &[f32], width: usize, height: usize) -> Result<Vec<f32>, Error> {
     check_mask(base, width, height, "subtract base")?;
     check_mask(cut, width, height, "subtract cut")?;
-    Ok(base
-        .iter()
-        .zip(cut.iter())
-        .map(|(b, c)| (b * (1.0 - c)).clamp(0.0, 1.0))
-        .collect())
+    Ok(base.iter().zip(cut.iter()).map(|(b, c)| (b * (1.0 - c)).clamp(0.0, 1.0)).collect())
 }
 
 /// Blends `processed` into `original` where `mask` is 1.
@@ -97,31 +87,15 @@ pub fn apply_masked_f32(
     if channels == 0 {
         return Err(Error::EmptyInput("apply_masked_f32 channels"));
     }
-    let pixels = width.checked_mul(height).ok_or_else(|| Error::InvalidParam(
-        "image dimensions overflow".to_string(),
-    ))?;
-    let expected = pixels.checked_mul(channels).ok_or_else(|| Error::InvalidParam(
-        "image dimensions overflow".to_string(),
-    ))?;
+    let pixels = width.checked_mul(height).ok_or_else(|| Error::InvalidParam("image dimensions overflow".to_string()))?;
+    let expected = pixels.checked_mul(channels).ok_or_else(|| Error::InvalidParam("image dimensions overflow".to_string()))?;
     if original.len() != expected {
-        return Err(Error::ShapeMismatch {
-            what: "apply_masked_f32 original",
-            expected,
-            found: original.len(),
-        });
+        return Err(Error::ShapeMismatch { what: "apply_masked_f32 original", expected, found: original.len() });
     }
     if processed.len() != expected {
-        return Err(Error::ShapeMismatch {
-            what: "apply_masked_f32 processed",
-            expected,
-            found: processed.len(),
-        });
+        return Err(Error::ShapeMismatch { what: "apply_masked_f32 processed", expected, found: processed.len() });
     }
-    let s = if strength.is_finite() {
-        strength.clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
+    let s = if strength.is_finite() { strength.clamp(0.0, 1.0) } else { 0.0 };
     if s <= 0.0 {
         return Ok(original.to_vec());
     }
@@ -146,19 +120,11 @@ fn cross(o: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
 /// Convex hull (Andrew monotone chain), counter-clockwise, without duplicate endpoints.
 /// Returns an empty vec for fewer than 3 distinct points.
 pub fn convex_hull(points: &[[f32; 2]]) -> Vec<[f32; 2]> {
-    let mut pts: Vec<[f32; 2]> = points
-        .iter()
-        .copied()
-        .filter(|p| p[0].is_finite() && p[1].is_finite())
-        .collect();
+    let mut pts: Vec<[f32; 2]> = points.iter().copied().filter(|p| p[0].is_finite() && p[1].is_finite()).collect();
     if pts.len() < 3 {
         return Vec::new();
     }
-    pts.sort_by(|a, b| {
-        a[0].partial_cmp(&b[0])
-            .unwrap_or(core::cmp::Ordering::Equal)
-            .then(a[1].partial_cmp(&b[1]).unwrap_or(core::cmp::Ordering::Equal))
-    });
+    pts.sort_by(|a, b| a[0].partial_cmp(&b[0]).unwrap_or(core::cmp::Ordering::Equal).then(a[1].partial_cmp(&b[1]).unwrap_or(core::cmp::Ordering::Equal)));
     pts.dedup_by(|a, b| a[0] == b[0] && a[1] == b[1]);
     if pts.len() < 3 {
         return Vec::new();
@@ -194,17 +160,11 @@ pub fn convex_hull(points: &[[f32; 2]]) -> Vec<[f32; 2]> {
 }
 
 /// Scanline fill of a convex polygon into a float mask (1 inside, 0 outside).
-pub fn fill_convex_poly(
-    width: usize,
-    height: usize,
-    poly: &[[f32; 2]],
-) -> Result<Vec<f32>, Error> {
+pub fn fill_convex_poly(width: usize, height: usize, poly: &[[f32; 2]]) -> Result<Vec<f32>, Error> {
     if width == 0 || height == 0 {
         return Err(Error::EmptyInput("fill_convex_poly dimensions"));
     }
-    let pixels = width.checked_mul(height).ok_or_else(|| Error::InvalidParam(
-        "mask dimensions overflow".to_string(),
-    ))?;
+    let pixels = width.checked_mul(height).ok_or_else(|| Error::InvalidParam("mask dimensions overflow".to_string()))?;
     let mut out = vec![0.0f32; pixels];
     if poly.len() < 3 {
         return Ok(out);
@@ -246,6 +206,41 @@ pub fn fill_convex_poly(
                 out[y * width + x] = 1.0;
             }
             k += 2;
+        }
+    }
+    Ok(out)
+}
+
+/// Bilinear resample of a float mask to a new size (clamped edges).
+/// Used to fit detector masks (e.g. Apple person segmentation) to the
+/// working image. Identity size returns a copy.
+pub fn resample_bilinear(src: &[f32], sw: usize, sh: usize, dw: usize, dh: usize) -> Result<Vec<f32>, Error> {
+    check_mask(src, sw, sh, "resample_bilinear src")?;
+    if dw == 0 || dh == 0 {
+        return Err(Error::EmptyInput("resample_bilinear dst"));
+    }
+    let pixels = dw.checked_mul(dh).ok_or_else(|| Error::InvalidParam("resample_bilinear dimensions overflow".to_string()))?;
+    if sw == dw && sh == dh {
+        return Ok(src.to_vec());
+    }
+    let mut out = vec![0.0f32; pixels];
+    let sx = if dw > 1 { (sw - 1) as f32 / (dw - 1) as f32 } else { 0.0 };
+    let sy = if dh > 1 { (sh - 1) as f32 / (dh - 1) as f32 } else { 0.0 };
+    for y in 0..dh {
+        let gy = y as f32 * sy;
+        let y0 = (gy.floor() as usize).min(sh - 1);
+        let y1 = (y0 + 1).min(sh - 1);
+        let fy = (gy - y0 as f32).clamp(0.0, 1.0);
+        for x in 0..dw {
+            let gx = x as f32 * sx;
+            let x0 = (gx.floor() as usize).min(sw - 1);
+            let x1 = (x0 + 1).min(sw - 1);
+            let fx = (gx - x0 as f32).clamp(0.0, 1.0);
+            let p00 = src[y0 * sw + x0];
+            let p10 = src[y0 * sw + x1];
+            let p01 = src[y1 * sw + x0];
+            let p11 = src[y1 * sw + x1];
+            out[y * dw + x] = p00 * (1.0 - fx) * (1.0 - fy) + p10 * fx * (1.0 - fy) + p01 * (1.0 - fx) * fy + p11 * fx * fy;
         }
     }
     Ok(out)
@@ -306,14 +301,7 @@ mod tests {
 
     #[test]
     fn hull_of_square_has_four_corners() {
-        let pts = [
-            [0.0, 0.0],
-            [1.0, 0.0],
-            [1.0, 1.0],
-            [0.0, 1.0],
-            [0.5, 0.5],
-            [0.2, 0.8],
-        ];
+        let pts = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [0.5, 0.5], [0.2, 0.8]];
         let hull = convex_hull(&pts);
         assert_eq!(hull.len(), 4);
         assert!(convex_hull(&[[0.0, 0.0], [1.0, 1.0]]).is_empty());
@@ -330,5 +318,21 @@ mod tests {
         let n: f32 = m.iter().sum();
         assert!((n - 16.0).abs() < 1.0, "filled={n}");
         assert!(fill_convex_poly(0, 5, &poly).is_err());
+        assert!(fill_convex_poly(0, 5, &poly).is_err());
+    }
+
+    #[test]
+    fn resample_identity_and_corners() {
+        let src = vec![1.0f32, 0.0, 0.0, 1.0];
+        assert_eq!(resample_bilinear(&src, 2, 2, 2, 2).unwrap(), src);
+        // Upscale keeps corners, interpolates the middle.
+        let big = resample_bilinear(&src, 2, 2, 4, 4).unwrap();
+        assert_eq!(big.len(), 16);
+        assert!((big[0] - 1.0).abs() < 1e-6);
+        assert!((big[3] - 0.0).abs() < 1e-6);
+        assert!((big[12] - 0.0).abs() < 1e-6);
+        assert!((big[15] - 1.0).abs() < 1e-6);
+        assert!(resample_bilinear(&src, 2, 2, 0, 4).is_err());
+        assert!(resample_bilinear(&[1.0], 2, 2, 2, 2).is_err());
     }
 }

@@ -9,8 +9,26 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = ["onnx"]
+# Local ONNX inference (YuNet/MoveNet backends for Linux/Windows).
+# Disabled for wasm (tract pulls getrandom without a js backend) and for
+# engine builds (the engine uses Apple Vision on macOS and needs no tract).
+onnx = ["dep:tract-onnx"]
+
 [dependencies]
 photocraft-color = { workspace = true }
 serde = { workspace = true }
+tract-onnx = { version = "0.22", optional = true }
+image = { workspace = true, features = ["png"] }
+# Apple Vision backend: macOS only (other platforms use the tract ONNX
+# backends in `detect`, so Linux/Windows/wasm builds stay dependency-free).
+[target.'cfg(target_vendor = "apple")'.dependencies]
+apple-vision = { version = "0.17", default-features = false, features = ["recognize_text", "detect_faces", "face_landmarks", "body_pose", "segmentation"] }
+
+[[example]]
+name = "inspect_onnx"
+required-features = ["onnx"]
+
 [dev-dependencies]
 serde_json = { workspace = true }
