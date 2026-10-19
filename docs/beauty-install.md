@@ -7,7 +7,21 @@ macOS 用 Apple Vision 自动识别人脸/人体/分割，无需下载任何模�
 
 > 这不是 `.wast` 插件文件，而是一组 engine 原生命令（原因见
 > `docs/beauty-requirements.md` §0/§5：WASM 沙箱做不了 ML 检测和大幅 warp）。
-> “安装”= 拉分支、构建、运行。
+
+## 0. 最省事：用打包好的 PortraitLab.app（推荐）
+
+仓库里带了一个改名打包脚本，用同一份 release 二进制生成**独立名字、独立 Bundle ID**
+（`dev.portraitlab.app`）的 App，可以和官方 PhotoCraft.app 并存、不抢文件关联：
+
+```sh
+cargo build --release -p photocraft --features heif
+ICON_OUT=/tmp/pl-icon python3 packaging/macos/portraitlab/icon.py
+REPO=$PWD WORK=/tmp/pl-app ICON_OUT=/tmp/pl-icon python3 packaging/macos/portraitlab/bundle.py
+ditto /tmp/pl-app/PortraitLab.app /Applications/PortraitLab.app   # 放到“应用程序”
+```
+
+双击打开后菜单栏 **滤镜 › Beautify** 就是三个原生命令（人脸/人体识别由 Apple Vision 提供，
+零权重、零联网）。下面的 §1–§8 是开发/命令行路线，调试时更好用。
 
 ## 1. 环境准备（macOS，一次性）
 

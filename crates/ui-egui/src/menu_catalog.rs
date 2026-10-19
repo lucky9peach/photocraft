@@ -545,6 +545,10 @@ pub static CATALOG: &[(&[&str], &str, Option<&str>, &str)] = &[
     (&["Filter"], "Lens Correction…", Some("Cmd+Shift+R"), "filter.lensCorrection"),
     (&["Filter"], "Liquify…", Some("Cmd+Shift+X"), "filter.liquify"),
     (&["Filter"], "Vanishing Point…", Some("Cmd+Alt+V"), "filter.vanishingPoint"),
+    // Portrait beautification: this fork's native beauty crate (face/body detection + warps).
+    (&["Filter", "Beautify"], "Portrait Beautify…", None, "filter.beautify.portrait"),
+    (&["Filter", "Beautify"], "Portrait Skin…", None, "filter.beautify.skin"),
+    (&["Filter", "Beautify"], "Portrait Reshape…", None, "filter.beautify.reshape"),
     (&["Filter"], "---", None, "---"),
     (&["Filter", "Blur"], "Average", None, "filter.blur.average"),
     (&["Filter", "Blur"], "Blur", None, "filter.blur.blur"),
