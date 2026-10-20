@@ -36,6 +36,14 @@ pub struct BeautifyParams {
     pub leg_lengthen: f32,
     /// B5 head/body proportion (subtle head shrink).
     pub head_ratio: f32,
+    /// B6 bust: teardrop-shaped enlargement (natural, not hemispherical).
+    pub bust_size: f32,
+    /// B6 bust lift (raises the bust line).
+    pub bust_lift: f32,
+    /// B6 centre groove between the breasts.
+    pub cleavage: f32,
+    /// B7 hip curve (hourglass: wider hips against the waist).
+    pub hip_curve: f32,
     // --- light & detail ---
     pub brighten: f32,
     /// -100..100.
@@ -64,6 +72,10 @@ impl Default for BeautifyParams {
             slim_legs: 0.0,
             leg_lengthen: 0.0,
             head_ratio: 0.0,
+            bust_size: 0.0,
+            bust_lift: 0.0,
+            cleavage: 0.0,
+            hip_curve: 0.0,
             brighten: 0.0,
             saturation: 0.0,
             eye_detail: 0.0,
@@ -100,6 +112,10 @@ impl BeautifyParams {
         p.slim_legs = clamp_0_100(p.slim_legs);
         p.leg_lengthen = clamp_0_100(p.leg_lengthen);
         p.head_ratio = clamp_0_100(p.head_ratio);
+        p.bust_size = clamp_0_100(p.bust_size);
+        p.bust_lift = clamp_0_100(p.bust_lift);
+        p.cleavage = clamp_0_100(p.cleavage);
+        p.hip_curve = clamp_0_100(p.hip_curve);
         p.brighten = clamp_0_100(p.brighten);
         p.saturation = if p.saturation.is_finite() { p.saturation.clamp(-100.0, 100.0) } else { 0.0 };
         p.eye_detail = clamp_0_100(p.eye_detail);
@@ -126,6 +142,10 @@ impl BeautifyParams {
             ("slim_legs", self.slim_legs, 0.0, 100.0),
             ("leg_lengthen", self.leg_lengthen, 0.0, 100.0),
             ("head_ratio", self.head_ratio, 0.0, 100.0),
+            ("bust_size", self.bust_size, 0.0, 100.0),
+            ("bust_lift", self.bust_lift, 0.0, 100.0),
+            ("cleavage", self.cleavage, 0.0, 100.0),
+            ("hip_curve", self.hip_curve, 0.0, 100.0),
             ("brighten", self.brighten, 0.0, 100.0),
             ("saturation", self.saturation, -100.0, 100.0),
             ("eye_detail", self.eye_detail, 0.0, 100.0),
@@ -156,6 +176,10 @@ impl BeautifyParams {
             || self.slim_legs > 0.0
             || self.leg_lengthen > 0.0
             || self.head_ratio > 0.0
+            || self.bust_size > 0.0
+            || self.bust_lift > 0.0
+            || self.cleavage > 0.0
+            || self.hip_curve > 0.0
     }
 
     #[must_use]
@@ -209,6 +233,10 @@ fn cosplay() -> BeautifyParams {
         slim_legs: 0.0,
         leg_lengthen: 0.0,
         head_ratio: 0.0,
+        bust_size: 0.0,
+        bust_lift: 0.0,
+        cleavage: 0.0,
+        hip_curve: 0.0,
         brighten: 20.0,
         saturation: 12.0,
         eye_detail: 40.0,

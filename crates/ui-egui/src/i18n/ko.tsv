@@ -3386,3 +3386,33 @@ curves	Smooth	매끄럽게
 	This document's layers: {needed} of {budget} for layers	이 문서의 레이어: 레이어용 {budget} 중 {needed}
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	이 문서의 레이어에 {needed}가 필요하지만 {budget}만 사용할 수 있습니다: 문서 전체 다시 그리기는 CPU를 사용합니다
 	GPU Memory (MB, 0 = Automatic)	GPU 메모리(MB, 0 = 자동)
+	Skin Smooth	피부 보정
+	Texture Keep	질감 유지
+	Blemish Fade	잡티 제거
+	Nasolabial Fade	팔자주름 완화
+	Brighten	밝기
+	Skin Only	피부만
+	Eye Enlarge	눈 확대
+	Jaw Slim	얼굴 축소
+	Nose Refine	코 보정
+	Vline	V 라인
+	Mouth Lift	입꼬리 올림
+	Cheek Lift	볼 리프팅
+	Slim Body	몸매 축소
+	Waist Slim	허리 축소
+	Slim Legs	다리 축소
+	Leg Lengthen	다리 길이
+	Head Ratio	머리 비율
+	Eye Detail	눈 디테일
+	Bust Size	가슴 확대
+	Bust Lift	가슴 리프팅
+	Cleavage	가슴 골
+	Hip Curve	힙 라인
+	Beautify	뷰티
+@id	filter.beautify.portrait	인물 뷰티…
+@id	filter.beautify.skin	피부 보정…
+@id	filter.beautify.reshape	인물 성형…
+	Skin Tone	피부 톤
+	Natural	내추럴
+	Cosplay	코스프레
+	Editorial	에디토리얼

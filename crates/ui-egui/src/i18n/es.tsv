@@ -4170,3 +4170,33 @@ navigator	Zoom	Zoom
 	This document's layers: {needed} of {budget} for layers	Capas de este documento: {needed} de {budget} para capas
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	Las capas de este documento necesitan {needed} pero pueden ocupar {budget}: los redibujados de todo el documento usan la CPU
 	GPU Memory (MB, 0 = Automatic)	Memoria de GPU (MB, 0 = Automático)
+	Skin Smooth	Suavizado de piel
+	Texture Keep	Conservar textura
+	Blemish Fade	Atenuar imperfecciones
+	Nasolabial Fade	Atenuar surcos nasolabiales
+	Brighten	Aclarar
+	Skin Only	Solo piel
+	Eye Enlarge	Agrandar ojos
+	Jaw Slim	Afinar rostro
+	Nose Refine	Refinar nariz
+	Vline	Línea en V
+	Mouth Lift	Elevar comisuras
+	Cheek Lift	Elevar pómulos
+	Slim Body	Afinar cuerpo
+	Waist Slim	Afinar cintura
+	Slim Legs	Afinar piernas
+	Leg Lengthen	Alargar piernas
+	Head Ratio	Proporción cabeza
+	Eye Detail	Detalle de ojos
+	Bust Size	Pecho
+	Bust Lift	Elevar pecho
+	Cleavage	Escote
+	Hip Curve	Curva de caderas
+	Beautify	Belleza
+@id	filter.beautify.portrait	Belleza de retrato…
+@id	filter.beautify.skin	Piel del retrato…
+@id	filter.beautify.reshape	Remodelar retrato…
+	Skin Tone	Tono de piel
+	Natural	Natural
+	Cosplay	Cosplay
+	Editorial	Editorial

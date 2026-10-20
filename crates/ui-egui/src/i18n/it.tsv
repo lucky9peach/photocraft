@@ -4329,3 +4329,33 @@ shape	Appearance	Aspetto
 	This document's layers: {needed} of {budget} for layers	Livelli di questo documento: {needed} su {budget} per i livelli
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	I livelli di questo documento richiedono {needed} ma possono occupare {budget}: i ridisegni dell'intero documento usano la CPU
 	GPU Memory (MB, 0 = Automatic)	Memoria GPU (MB, 0 = Automatico)
+	Skin Smooth	Levigatura pelle
+	Texture Keep	Mantieni texture
+	Blemish Fade	Attenua imperfezioni
+	Nasolabial Fade	Attenua rughe nasolabiali
+	Brighten	Schiarisci
+	Skin Only	Solo pelle
+	Eye Enlarge	Ingrandisci occhi
+	Jaw Slim	Assottiglia viso
+	Nose Refine	Rifinisci naso
+	Vline	Linea a V
+	Mouth Lift	Angoli della bocca
+	Cheek Lift	Lift guance
+	Slim Body	Assottiglia corpo
+	Waist Slim	Assottiglia vita
+	Slim Legs	Assottiglia gambe
+	Leg Lengthen	Allunga gambe
+	Head Ratio	Rapporto testa
+	Eye Detail	Dettaglio occhi
+	Bust Size	Seno
+	Bust Lift	Lift seno
+	Cleavage	Scollatura
+	Hip Curve	Curva fianchi
+	Beautify	Bellezza
+@id	filter.beautify.portrait	Bellezza ritratto…
+@id	filter.beautify.skin	Pelle del ritratto…
+@id	filter.beautify.reshape	Rimodella ritratto…
+	Skin Tone	Tono pelle
+	Natural	Naturale
+	Cosplay	Cosplay
+	Editorial	Editoriale

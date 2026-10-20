@@ -20,7 +20,7 @@ use std::sync::{LazyLock, Mutex};
 
 use photocraft_beauty::geom::{
     BodyGeom, BodyWarpParams, FaceGeom, FaceWarpParams, Point, Primitive, StripSpec, body_warps, complete_body_joints, face_warps, segment_strip_mask,
-    skin_chroma_mask,
+    skin_chroma_score,
 };
 use photocraft_beauty::light::{adjust_saturation, brighten, enhance_eye_detail, sharpen};
 use photocraft_beauty::mask::{convex_hull, feather_box, fill_convex_poly, resample_bilinear, subtract, union_max};
@@ -118,6 +118,18 @@ pub fn beauty_params(cmd: &str, p: &Value) -> Result<BeautifyParams> {
     }
     if let Some(v) = s01_opt(p, "headRatio") {
         out.head_ratio = v;
+    }
+    if let Some(v) = s01_opt(p, "bustSize") {
+        out.bust_size = v;
+    }
+    if let Some(v) = s01_opt(p, "bustLift") {
+        out.bust_lift = v;
+    }
+    if let Some(v) = s01_opt(p, "cleavage") {
+        out.cleavage = v;
+    }
+    if let Some(v) = s01_opt(p, "hipCurve") {
+        out.hip_curve = v;
     }
     if let Some(v) = s01_opt(p, "brighten") {
         out.brighten = v;
@@ -221,7 +233,7 @@ fn to_pixels(points: &[Point], w: usize, h: usize) -> Vec<[f32; 2]> {
 }
 
 /// Union face-skin mask: oval hulls minus organ cutouts, feathered.
-fn face_skin_mask(faces: &[FaceGeom], w: usize, h: usize, cmd: &str) -> Result<Vec<f32>> {
+fn face_skin_mask(faces: &[FaceGeom], chroma: &[f32], w: usize, h: usize, cmd: &str) -> Result<Vec<f32>> {
     let mut acc = vec![0.0f32; w * h];
     for face in faces {
         let regions = face.skin_regions().map_err(|e| beauty_err(cmd, e))?;
@@ -235,6 +247,11 @@ fn face_skin_mask(faces: &[FaceGeom], w: usize, h: usize, cmd: &str) -> Result<V
             m = subtract(&m, &c, w, h).map_err(|e| beauty_err(cmd, e))?;
         }
         acc = union_max(&acc, &m, w, h).map_err(|e| beauty_err(cmd, e))?;
+    }
+    // Only skin-coloured pixels inside the oval: hair, brows and the background inside the hull
+    // are not skin and must not be smoothed, brightened or re-toned with the face.
+    for (a, c) in acc.iter_mut().zip(chroma.iter()) {
+        *a *= c;
     }
     let feather = (w.min(h) / 200).clamp(1, 6);
     feather_box(&acc, w, h, feather).map_err(|e| beauty_err(cmd, e))
@@ -365,7 +382,17 @@ fn face_warp_params(p: &BeautifyParams) -> FaceWarpParams {
 }
 
 fn body_warp_params(p: &BeautifyParams) -> BodyWarpParams {
-    BodyWarpParams { slim_body: p.slim_body, waist_slim: p.waist_slim, slim_legs: p.slim_legs, leg_lengthen: p.leg_lengthen, head_ratio: p.head_ratio }
+    BodyWarpParams {
+        slim_body: p.slim_body,
+        waist_slim: p.waist_slim,
+        slim_legs: p.slim_legs,
+        leg_lengthen: p.leg_lengthen,
+        head_ratio: p.head_ratio,
+        bust_size: p.bust_size,
+        bust_lift: p.bust_lift,
+        cleavage: p.cleavage,
+        hip_curve: p.hip_curve,
+    }
 }
 
 /// Interleaved RGB8 (for detection) from normalized f32 samples.
@@ -395,7 +422,11 @@ struct WorkMasks {
 
 /// Builds every working mask for the rect (pre-warp geometry).
 fn build_masks(cmd: &str, det: &CachedDetection, img: &[f32], w: usize, h: usize, ch: usize, want_folds: bool) -> Result<WorkMasks> {
-    let face_skin = face_skin_mask(&det.faces, w, h, cmd)?;
+    // Soft skin-likeness: the face oval is intersected with it, so hair, brows and the background
+    // inside the hull are not treated as face skin, and the body skin is it gated by the person
+    // mask. (The score has smooth edges: a hard 0/1 rule leaves holes on shadowed skin.)
+    let chroma = skin_chroma_score(img, w, h, ch).map_err(|e| beauty_err(cmd, e))?;
+    let face_skin = face_skin_mask(&det.faces, &chroma, w, h, cmd)?;
     let eyes = eye_mask(&det.faces, w, h, cmd)?;
     let folds = if want_folds { fold_mask(&det.faces, w, h, cmd)? } else { vec![0.0; w * h] };
     let face_gate = face_gate_mask(&det.faces, w, h, cmd)?;
@@ -413,14 +444,9 @@ fn build_masks(cmd: &str, det: &CachedDetection, img: &[f32], w: usize, h: usize
             person = None;
         }
     }
-    // Skin = face ovals + chroma∩person (B4 body skin). With no detection at
-    // all the chroma rule alone still gives a usable global skin mask.
-    let chroma = skin_chroma_mask(img, w, h, ch).map_err(|e| beauty_err(cmd, e))?;
-    let feather = (w.min(h) / 250).clamp(1, 5);
-    let chroma = feather_box(&chroma, w, h, feather).map_err(|e| beauty_err(cmd, e))?;
     let body_skin = match &person {
         Some(p) => chroma.iter().zip(p.iter()).map(|(c, m)| c * m).collect(),
-        None if det.faces.is_empty() => chroma,
+        None if det.faces.is_empty() => chroma.clone(),
         None => vec![0.0; w * h],
     };
     let skin = union_max(&face_skin, &body_skin, w, h).map_err(|e| beauty_err(cmd, e))?;
@@ -467,19 +493,32 @@ fn apply_warps(
     let fw = face_warp_params(params);
     let bw = body_warp_params(params);
     let want_face = fw.eye_enlarge > 0.0 || fw.jaw_slim > 0.0 || fw.nose_refine > 0.0 || fw.vline > 0.0 || fw.mouth_lift > 0.0 || fw.cheek_lift > 0.0;
-    let want_body = bw.slim_body > 0.0 || bw.waist_slim > 0.0 || bw.slim_legs > 0.0 || bw.leg_lengthen > 0.0 || bw.head_ratio > 0.0;
+    let want_body = bw.slim_body > 0.0
+        || bw.waist_slim > 0.0
+        || bw.slim_legs > 0.0
+        || bw.leg_lengthen > 0.0
+        || bw.head_ratio > 0.0
+        || bw.bust_size > 0.0
+        || bw.bust_lift > 0.0
+        || bw.cleavage > 0.0
+        || bw.hip_curve > 0.0;
     if (!want_face && !want_body) || (det.faces.is_empty() && det.bodies.is_empty()) {
         return Ok(img.to_vec());
     }
-    let mut field = Field::new(w, h).map_err(|e| beauty_err(cmd, e))?;
+    // Face and body warps are built into separate fields: the face one gets a saturating limit
+    // (Liquify's brush saturates the same way, so overlapping jaw strokes narrow the face instead
+    // of stacking into a cone), while body work keeps its full range (leg lengthening is large).
+    let mut face_field = Field::new(w, h).map_err(|e| beauty_err(cmd, e))?;
     if want_face {
         for face in &det.faces {
             let prims: Vec<Primitive> = face_warps(face, w, h, &fw).map_err(|e| beauty_err(cmd, e))?;
             for prim in &prims {
-                prim.apply(&mut field, Some(&masks.face_gate)).map_err(|e| beauty_err(cmd, e))?;
+                prim.apply(&mut face_field, Some(&masks.face_gate)).map_err(|e| beauty_err(cmd, e))?;
             }
         }
+        face_field.soft_clamp(w.min(h) as f32 * 0.020);
     }
+    let mut body_field = Field::new(w, h).map_err(|e| beauty_err(cmd, e))?;
     if want_body {
         for body in &det.bodies {
             // Complete joints from the silhouette (pose backends often miss
@@ -494,10 +533,12 @@ fn apply_warps(
             let completed = BodyGeom { bbox: body.bbox, joints };
             let prims = body_warps(&completed, w, h, &bw).map_err(|e| beauty_err(cmd, e))?;
             for prim in &prims {
-                prim.apply(&mut field, masks.person.as_deref()).map_err(|e| beauty_err(cmd, e))?;
+                prim.apply(&mut body_field, masks.person.as_deref()).map_err(|e| beauty_err(cmd, e))?;
             }
         }
     }
+    let mut field = face_field;
+    field.add_from(&body_field).map_err(|e| beauty_err(cmd, e))?;
     if field.max_abs() == 0.0 {
         return Ok(img.to_vec());
     }
@@ -699,8 +740,8 @@ fn run_reshape(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 const SKIN_DOC: &str = r##"{"preset":"Natural|Cosplay|Editorial","skinSmooth":0..100=0,"skinTone":0..100=0,"blemishFade":0..100=0,"textureKeep":0..100=70,"nasolabialFade":0..100=0,"brighten":0..100=0,"saturation":-100..100=0,"eyeDetail":0..100=0,"sharpen":0..100=0}"##;
-const RESHAPE_DOC: &str = r##"{"preset":"Natural|Cosplay|Editorial","eyeEnlarge":0..100=0,"jawSlim":0..100=0,"noseRefine":0..100=0,"vline":0..100=0,"mouthLift":0..100=0,"cheekLift":0..100=0,"slimBody":0..100=0,"waistSlim":0..100=0,"slimLegs":0..100=0,"legLengthen":0..100=0,"headRatio":0..100=0}"##;
-const PORTRAIT_DOC: &str = r##"{"preset":"Natural|Cosplay|Editorial","skinSmooth":0..100=0,"skinTone":0..100=0,"blemishFade":0..100=0,"textureKeep":0..100=70,"nasolabialFade":0..100=0,"eyeEnlarge":0..100=0,"jawSlim":0..100=0,"noseRefine":0..100=0,"vline":0..100=0,"mouthLift":0..100=0,"cheekLift":0..100=0,"slimBody":0..100=0,"waistSlim":0..100=0,"slimLegs":0..100=0,"legLengthen":0..100=0,"headRatio":0..100=0,"brighten":0..100=0,"saturation":-100..100=0,"eyeDetail":0..100=0,"sharpen":0..100=0}"##;
+const RESHAPE_DOC: &str = r##"{"preset":"Natural|Cosplay|Editorial","eyeEnlarge":0..100=0,"jawSlim":0..100=0,"noseRefine":0..100=0,"vline":0..100=0,"mouthLift":0..100=0,"cheekLift":0..100=0,"slimBody":0..100=0,"waistSlim":0..100=0,"slimLegs":0..100=0,"legLengthen":0..100=0,"headRatio":0..100=0,"bustSize":0..100=0,"bustLift":0..100=0,"cleavage":0..100=0,"hipCurve":0..100=0}"##;
+const PORTRAIT_DOC: &str = r##"{"preset":"Natural|Cosplay|Editorial","skinSmooth":0..100=0,"skinTone":0..100=0,"blemishFade":0..100=0,"textureKeep":0..100=70,"nasolabialFade":0..100=0,"eyeEnlarge":0..100=0,"jawSlim":0..100=0,"noseRefine":0..100=0,"vline":0..100=0,"mouthLift":0..100=0,"cheekLift":0..100=0,"slimBody":0..100=0,"waistSlim":0..100=0,"slimLegs":0..100=0,"legLengthen":0..100=0,"headRatio":0..100=0,"bustSize":0..100=0,"bustLift":0..100=0,"cleavage":0..100=0,"hipCurve":0..100=0,"brighten":0..100=0,"saturation":-100..100=0,"eyeDetail":0..100=0,"sharpen":0..100=0}"##;
 
 /// The command specs of this module.
 pub fn specs() -> Vec<CommandSpec> {
@@ -850,11 +891,19 @@ mod tests {
             Point { x: 0.56, y: 0.70 },
         )
         .unwrap();
-        let skin = face_skin_mask(&[face.clone()], 100, 100, "test").unwrap();
+        // Skin score: skin everywhere except the top band (hair / background above the face).
+        let mut chroma = vec![1.0f32; 100 * 100];
+        for y in 0..40 {
+            for x in 0..100 {
+                chroma[y * 100 + x] = 0.0;
+            }
+        }
+        let skin = face_skin_mask(&[face.clone()], &chroma, 100, 100, "test").unwrap();
         // Cheek is skin; the eye centre is cut out.
         assert!(skin[55 * 100 + 42] > 0.9, "cheek");
         assert!(skin[38 * 100 + 42] < 0.5, "left eye cutout");
         assert_eq!(skin[5 * 100 + 5], 0.0, "background");
+        assert!(skin[20 * 100 + 50] < 0.2, "hair inside the oval is not face skin");
         let eyes = eye_mask(&[face], 100, 100, "test").unwrap();
         assert!(eyes[38 * 100 + 42] > 0.9, "eye disc");
         assert_eq!(eyes[5 * 100 + 5], 0.0);

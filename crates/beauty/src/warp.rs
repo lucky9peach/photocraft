@@ -110,6 +110,40 @@ impl Field {
     pub fn max_abs(&self) -> f32 {
         self.dx.iter().chain(self.dy.iter()).fold(0.0f32, |m, v| m.max(v.abs()))
     }
+    /// Smoothly limits the field's magnitude to `max_abs` pixels: every offset keeps its
+    /// direction but is scaled by `max_abs / (max_abs + |d|)`, so small offsets are almost
+    /// untouched, large ones saturate, and the result stays C1-continuous.
+    ///
+    /// This is what keeps stacked strokes (a jaw narrowed by many overlapping pulls) from
+    /// collapsing into a cone: Photoshop's Liquify brush saturates the same way.
+    pub fn soft_clamp(&mut self, max_abs: f32) {
+        if !max_abs.is_finite() || max_abs <= 0.0 {
+            return;
+        }
+        for i in 0..self.dx.len() {
+            let (dx, dy) = (self.dx[i], self.dy[i]);
+            let len = dx.hypot(dy);
+            if len <= max_abs {
+                continue;
+            }
+            let k = max_abs / (max_abs + len);
+            self.dx[i] = dx * k;
+            self.dy[i] = dy * k;
+        }
+    }
+
+    /// Adds `other`'s offsets into this field (both fields must have the same size), so a face
+    /// field and a body field built separately can be combined into one remap.
+    pub fn add_from(&mut self, other: &Field) -> Result<(), Error> {
+        if self.dx.len() != other.dx.len() || self.w != other.w || self.h != other.h {
+            return Err(Error::ShapeMismatch { what: "field merge", expected: self.dx.len(), found: other.dx.len() });
+        }
+        for i in 0..self.dx.len() {
+            self.dx[i] += other.dx[i];
+            self.dy[i] += other.dy[i];
+        }
+        Ok(())
+    }
 
     fn check_mask(&self, mask: Option<&[f32]>) -> Result<(), Error> {
         if let Some(m) = mask {

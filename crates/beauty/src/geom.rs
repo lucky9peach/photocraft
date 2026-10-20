@@ -147,11 +147,29 @@ pub struct BodyWarpParams {
     pub leg_lengthen: f32,
     /// B5 head/body proportion (subtle head shrink).
     pub head_ratio: f32,
+    /// B6 bust enlargement (teardrop).
+    pub bust_size: f32,
+    /// B6 bust lift.
+    pub bust_lift: f32,
+    /// B6 cleavage groove.
+    pub cleavage: f32,
+    /// B7 hip curve (hourglass).
+    pub hip_curve: f32,
 }
 
 impl Default for BodyWarpParams {
     fn default() -> Self {
-        Self { slim_body: 0.0, waist_slim: 0.0, slim_legs: 0.0, leg_lengthen: 0.0, head_ratio: 0.0 }
+        Self {
+            slim_body: 0.0,
+            waist_slim: 0.0,
+            slim_legs: 0.0,
+            leg_lengthen: 0.0,
+            head_ratio: 0.0,
+            bust_size: 0.0,
+            bust_lift: 0.0,
+            cleavage: 0.0,
+            hip_curve: 0.0,
+        }
     }
 }
 
@@ -188,71 +206,76 @@ pub fn face_warps(face: &FaceGeom, img_w: usize, img_h: usize, params: &FaceWarp
     let (w, h) = (img_w as f32, img_h as f32);
     let px = |p: Point| (p.x * w, p.y * h);
     let min_dim = w.min(h);
+    let face_w = (face.bbox[2] - face.bbox[0]).max(1e-4) * w;
+    let cx = (face.bbox[0] + face.bbox[2]) * 0.5 * w;
     let mut out = Vec::new();
+
+    // F4 eyes: magnify with a wide, soft falloff (a tight brush balloons the iris).
     let eye = s01(params.eye_enlarge);
     if eye > 0.0 {
-        let r = (face.eye_radius * min_dim * 2.2).max(8.0);
-        let (lx, ly) = px(face.left_eye);
-        let (rx, ry) = px(face.right_eye);
-        out.push(Primitive::Radial { cx: lx, cy: ly, radius: r, strength: eye });
-        out.push(Primitive::Radial { cx: rx, cy: ry, radius: r, strength: eye });
-    }
-    let face_w = (face.bbox[2] - face.bbox[0]).max(1e-4) * w;
-    // Classic jaw slim: two lower-side pulls toward the centre.
-    let jaw = s01(params.jaw_slim);
-    if jaw > 0.0 && face.jaw.len() >= 2 {
-        let (ccx, ccy) = (face.bbox[0] + face.bbox[2], face.bbox[1] + face.bbox[3]);
-        let (ccx, ccy) = (ccx * 0.5 * w, ccy * 0.5 * h);
-        let mut lower: Vec<Point> = face.jaw.iter().copied().filter(|p| p.y * h > ccy).collect();
-        if lower.len() >= 2 {
-            lower.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(core::cmp::Ordering::Equal));
-            let first = lower[0];
-            let last = lower[lower.len() - 1];
-            for p in [first, last] {
-                let (jx, jy) = px(p);
-                out.push(Primitive::Pull(PullSpec { x: jx, y: jy, vx: ccx - jx, vy: (ccy - jy) * 0.25, amount: face_w * 0.035 * jaw, radius: face_w * 0.45 }));
-            }
+        let r = (face.eye_radius * min_dim * 3.2).max(10.0);
+        for e in [face.left_eye, face.right_eye] {
+            let (ex, ey) = px(e);
+            out.push(Primitive::Radial { cx: ex, cy: ey, radius: r, strength: eye * 0.55 });
         }
     }
-    // N1 V-line: narrow the lower face along the whole jawline.
-    let vline = s01(params.vline);
-    if vline > 0.0 && !face.jaw.is_empty() {
-        let ccx = (face.bbox[0] + face.bbox[2]) * 0.5 * w;
-        let cheek_y = (face.bbox[1] + face.bbox[3]) * 0.5 * h;
-        for p in &face.jaw {
+
+    // F5/N1 lower-face narrowing, Liquify style: push the jawline along its own inward normal,
+    // peaking at the gonial angle and fading to zero at the chin and at the ear. Pulling every
+    // landmark toward the centre axis (what this used to do) flattens the contour into a cone;
+    // a normal-direction push narrows the face while keeping the jaw's own curvature.
+    let narrow = (s01(params.jaw_slim) * 0.6 + s01(params.vline) * 0.4).min(1.0);
+    if narrow > 0.0 && face.jaw.len() >= 3 {
+        let mut pts: Vec<Point> = face.jaw.iter().copied().filter(|p| p.is_valid()).collect();
+        pts.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(core::cmp::Ordering::Equal));
+        let top_y = pts.iter().fold(f32::INFINITY, |m, p| m.min(p.y)) * h;
+        let chin_y = face.chin.y * h;
+        let span = (chin_y - top_y).max(1.0);
+        for (i, p) in pts.iter().enumerate() {
             let (jx, jy) = px(*p);
-            if jy <= cheek_y {
+            let t = ((jy - top_y) / span).clamp(0.0, 1.0);
+            let weight = bump(t, 0.45, 0.45);
+            if weight <= 0.0 {
                 continue;
             }
-            let depth = ((jy - cheek_y) / (face_w * 0.5)).clamp(0.0, 1.0);
-            let side = if jx < ccx { 1.0 } else { -1.0 };
-            out.push(Primitive::Pull(PullSpec {
-                x: jx,
-                y: jy,
-                vx: side,
-                vy: -0.25,
-                amount: face_w * 0.022 * vline * (0.35 + 0.65 * depth),
-                radius: face_w * 0.30,
-            }));
+            let (tx, ty) = jaw_tangent(&pts, i, w, h);
+            let len = tx.hypot(ty).max(1e-6);
+            let (mut nx, mut ny) = (-ty / len, tx / len);
+            if nx * (cx - jx) < 0.0 {
+                nx = -nx;
+                ny = -ny;
+            }
+            out.push(Primitive::Pull(PullSpec { x: jx, y: jy, vx: nx, vy: ny * 0.75, amount: face_w * 0.040 * narrow * weight, radius: face_w * 0.42 }));
         }
     }
-    // Nose refine + N4 geometry share the nose/eye anchors.
+
+    // F6/N2 nose: gentle horizontal narrowing.
     let nose = s01(params.nose_refine);
     if nose > 0.0 {
         let eye_dist = face.left_eye.dist(face.right_eye).max(1e-4) * min_dim;
         let (nx, ny) = px(face.nose_tip);
-        out.push(Primitive::Squeeze(SqueezeSpec { cx: nx, cy: ny, rx: eye_dist * 0.55, ry: eye_dist * 0.9, strength: nose, horizontal: true, angle_rad: 0.0 }));
+        out.push(Primitive::Squeeze(SqueezeSpec {
+            cx: nx,
+            cy: ny,
+            rx: eye_dist * 0.45,
+            ry: eye_dist * 0.85,
+            strength: nose * 0.85,
+            horizontal: true,
+            angle_rad: 0.0,
+        }));
     }
-    // N3 mouth-corner lift: small up-outward pulls at both corners.
+
+    // N3 mouth corners: a small up-and-out lift.
     let lift = s01(params.mouth_lift);
     if lift > 0.0 {
         let mw = face.mouth_left.dist(face.mouth_right).max(1e-4) * w;
         for (corner, side) in [(face.mouth_left, -1.0), (face.mouth_right, 1.0)] {
             let (mx, my) = px(corner);
-            out.push(Primitive::Pull(PullSpec { x: mx, y: my, vx: side * 0.55, vy: -0.85, amount: mw * 0.030 * lift, radius: mw * 0.55 }));
+            out.push(Primitive::Pull(PullSpec { x: mx, y: my, vx: side * 0.5, vy: -0.9, amount: mw * 0.022 * lift, radius: mw * 0.6 }));
         }
     }
-    // N5 apple-muscle lift: gentle upward pulls at both cheek centres.
+
+    // N5 apple cheeks: a soft upward lift at both cheek centres.
     let cheeks = s01(params.cheek_lift);
     if cheeks > 0.0 {
         let eye_dist = face.left_eye.dist(face.right_eye).max(1e-4);
@@ -262,14 +285,38 @@ pub fn face_warps(face: &FaceGeom, img_w: usize, img_h: usize, params: &FaceWarp
             out.push(Primitive::Pull(PullSpec {
                 x: ccx,
                 y: ccy,
-                vx: side * 0.35,
+                vx: side * 0.3,
                 vy: -1.0,
-                amount: eye_dist * min_dim * 0.030 * cheeks,
-                radius: eye_dist * min_dim * 0.85,
+                amount: eye_dist * min_dim * 0.022 * cheeks,
+                radius: eye_dist * min_dim * 0.95,
             }));
         }
     }
     Ok(out)
+}
+
+/// Smooth bump: 1 at `center`, 0 at `center ± width`, C1-continuous.
+fn bump(t: f32, center: f32, width: f32) -> f32 {
+    if !t.is_finite() || width <= 0.0 {
+        return 0.0;
+    }
+    let d = (t - center).abs();
+    if d >= width {
+        return 0.0;
+    }
+    0.5 + 0.5 * (core::f32::consts::PI * d / width).cos()
+}
+
+/// Tangent of a polyline at `i` (central difference over the neighbours), in pixels.
+fn jaw_tangent(pts: &[Point], i: usize, w: f32, h: f32) -> (f32, f32) {
+    let a = pts[i.saturating_sub(1)];
+    let b = pts[(i + 1).min(pts.len() - 1)];
+    let tx = (b.x - a.x) * w;
+    let ty = (b.y - a.y) * h;
+    if tx.hypot(ty) <= 1e-6 {
+        return (1.0, 0.0);
+    }
+    (tx, ty)
 }
 
 /// Builds body warp primitives (B1-B3, B5) in pixel space.
@@ -324,6 +371,42 @@ pub fn body_warps(body: &BodyGeom, img_w: usize, img_h: usize, params: &BodyWarp
                 horizontal: true,
                 angle_rad: 0.0,
             }));
+        }
+        // B6 bust: a teardrop, not a hemisphere — an upper, rounder bulge plus a stronger lower one
+        // that pushes the lower pole down and out, an optional lift, and a centre groove.
+        let bust = s01(params.bust_size);
+        let lift = s01(params.bust_lift);
+        let cleave = s01(params.cleavage);
+        let sh_w = ls.dist(rs).max(1e-4) * w;
+        let sh_y = sh_c.y * h;
+        let hip_y = hip_c.y * h;
+        let axis_x = (sh_c.x + hip_c.x) * 0.5 * w;
+        let bust_y = sh_y + (hip_y - sh_y) * 0.30;
+        if bust > 0.0 || lift > 0.0 || cleave > 0.0 {
+            let off = sh_w * 0.20;
+            let r = sh_w * 0.26;
+            for side in [-1.0f32, 1.0] {
+                let bx = axis_x + side * off;
+                if bust > 0.0 {
+                    out.push(Primitive::Radial { cx: bx, cy: bust_y - r * 0.30, radius: r * 0.95, strength: bust * 0.16 });
+                    out.push(Primitive::Radial { cx: bx, cy: bust_y + r * 0.35, radius: r * 0.85, strength: bust * 0.24 });
+                }
+                if lift > 0.0 {
+                    out.push(Primitive::Pull(PullSpec { x: bx, y: bust_y + r * 0.25, vx: 0.0, vy: -1.0, amount: r * 0.30 * lift, radius: r * 1.15 }));
+                }
+                if cleave > 0.0 {
+                    out.push(Primitive::Pull(PullSpec { x: bx - side * r * 0.55, y: bust_y, vx: -side, vy: 0.0, amount: r * 0.16 * cleave, radius: r * 0.55 }));
+                }
+            }
+        }
+        // B7 hips: a gentle outward curve for an hourglass silhouette against the waist.
+        let hipc = s01(params.hip_curve);
+        if hipc > 0.0 {
+            let r = sh_w * 0.30;
+            for (hip, side) in [(lh, -1.0f32), (rh, 1.0)] {
+                let (hx, hy) = px(hip);
+                out.push(Primitive::Radial { cx: hx + side * r * 0.35, cy: hy, radius: r, strength: hipc * 0.14 });
+            }
         }
     }
     // Legs: slim (rotated squeezes) + lengthen (segment stretches).
@@ -498,6 +581,51 @@ pub fn skin_chroma_mask(img: &[f32], w: usize, h: usize, ch: usize) -> Result<Ve
         if (77.0..127.0).contains(&cb) && (133.0..173.0).contains(&cr) {
             out[i] = 1.0;
         }
+    }
+    Ok(out)
+}
+
+/// Smooth ramp: 0 outside `[lo - margin, hi + margin]`, 1 inside `[lo, hi]`, C1 between.
+fn ramp(v: f32, lo: f32, hi: f32, margin: f32) -> f32 {
+    if !v.is_finite() {
+        return 0.0;
+    }
+    if v >= lo && v <= hi {
+        return 1.0;
+    }
+    if v <= lo - margin || v >= hi + margin {
+        return 0.0;
+    }
+    let t = if v < lo { (v - (lo - margin)) / margin } else { ((hi + margin) - v) / margin };
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// Soft skin-likeness in 0..1 per pixel: the Chai & Ngan YCbCr ranges with smooth edges, times a
+/// minimum-chroma gate (so grey and near-grey pixels score 0). Alpha is ignored.
+///
+/// The hard 0/1 [`skin_chroma_mask`] leaves holes where skin is shadowed or slightly off; a soft
+/// score keeps those pixels partially in, which is what a beauty mask wants.
+pub fn skin_chroma_score(img: &[f32], w: usize, h: usize, ch: usize) -> Result<Vec<f32>, Error> {
+    if w == 0 || h == 0 || ch == 0 {
+        return Err(Error::EmptyInput("skin_chroma_score input"));
+    }
+    let pixels = w.checked_mul(h).ok_or_else(|| Error::InvalidParam("image dimensions overflow".to_string()))?;
+    if img.len() != pixels * ch {
+        return Err(Error::ShapeMismatch { what: "skin_chroma_score input", expected: pixels * ch, found: img.len() });
+    }
+    if ch < 3 {
+        return Ok(vec![0.0; pixels]);
+    }
+    let mut out = vec![0.0f32; pixels];
+    for (i, v) in out.iter_mut().enumerate() {
+        let (r, g, b) = (img[i * ch] * 255.0, img[i * ch + 1] * 255.0, img[i * ch + 2] * 255.0);
+        let cb = 128.0 - 0.168_736 * r - 0.331_264 * g + 0.5 * b;
+        let cr = 128.0 + 0.5 * r - 0.418_688 * g - 0.081_312 * b;
+        let spread = r.max(g).max(b) - r.min(g).min(b);
+        let chroma = ((spread - 6.0) / 10.0).clamp(0.0, 1.0);
+        let chroma = chroma * chroma * (3.0 - 2.0 * chroma);
+        *v = ramp(cb, 77.0, 127.0, 9.0) * ramp(cr, 133.0, 173.0, 9.0) * chroma;
     }
     Ok(out)
 }
@@ -966,26 +1094,53 @@ mod tests {
     #[test]
     fn body_warps_cover_all_sliders() {
         let b = sample_body();
-        let p = BodyWarpParams { slim_body: 50.0, waist_slim: 50.0, slim_legs: 50.0, leg_lengthen: 20.0, head_ratio: 50.0 };
+        let p = BodyWarpParams {
+            slim_body: 50.0,
+            waist_slim: 50.0,
+            slim_legs: 50.0,
+            leg_lengthen: 20.0,
+            head_ratio: 50.0,
+            bust_size: 40.0,
+            bust_lift: 30.0,
+            cleavage: 30.0,
+            hip_curve: 30.0,
+        };
         let prims = body_warps(&b, 400, 800, &p).unwrap();
         let mut squeeze = 0;
         let mut stretch = 0;
-        let mut radial = 0;
+        let mut radial_out = 0;
+        let mut radial_in = 0;
+        let mut pull = 0;
         for prim in &prims {
             match prim {
                 Primitive::Squeeze(_) => squeeze += 1,
                 Primitive::Stretch(_) => stretch += 1,
                 Primitive::Radial { strength, .. } => {
-                    radial += 1;
-                    assert!(*strength < 0.0, "head shrink must be negative");
+                    if *strength > 0.0 {
+                        radial_out += 1;
+                    } else {
+                        radial_in += 1;
+                    }
                 }
-                Primitive::Pull(_) => {}
+                Primitive::Pull(_) => pull += 1,
             }
         }
         assert_eq!(squeeze, 2 + 2 * 2, "torso+waist+2 segs x2 legs");
         assert_eq!(stretch, 4, "thigh+calf x2 legs");
-        assert_eq!(radial, 1);
+        assert_eq!(radial_in, 1, "head shrink is the only inward radial");
+        assert_eq!(radial_out, 4 + 2, "two bust bulges per side, one radial per hip");
+        assert_eq!(pull, 4, "bust lift + cleavage groove per side");
         assert!(body_warps(&b, 400, 800, &BodyWarpParams::default()).unwrap().is_empty());
+        // Each new slider works on its own.
+        for (p, want) in [
+            (BodyWarpParams { bust_size: 50.0, ..BodyWarpParams::default() }, 4),
+            (BodyWarpParams { bust_lift: 50.0, ..BodyWarpParams::default() }, 2),
+            (BodyWarpParams { cleavage: 50.0, ..BodyWarpParams::default() }, 2),
+            (BodyWarpParams { hip_curve: 50.0, ..BodyWarpParams::default() }, 2),
+        ] {
+            let got = body_warps(&b, 400, 800, &p).unwrap();
+            assert_eq!(got.len(), want, "slider produced {got:?}");
+        }
         // Missing joints degrade gracefully (no leg primitives, no error).
         let mut b2 = b.clone();
         b2.joints.left_knee = None;

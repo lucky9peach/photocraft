@@ -2809,3 +2809,33 @@ curves	Smooth	平滑
 	This document's layers: {needed} of {budget} for layers	此文件的圖層：圖層可用 {budget} 中的 {needed}
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	此文件的圖層需要 {needed}，但只能佔用 {budget}：整份文件的重繪使用 CPU
 	GPU Memory (MB, 0 = Automatic)	GPU 記憶體（MB，0 = 自動）
+	Skin Smooth	磨皮
+	Texture Keep	保留質感
+	Blemish Fade	祛斑
+	Nasolabial Fade	法令紋淡化
+	Brighten	提亮
+	Skin Only	僅膚色
+	Eye Enlarge	放大眼睛
+	Jaw Slim	瘦臉
+	Nose Refine	鼻形微調
+	Vline	V 臉
+	Mouth Lift	嘴角上揚
+	Cheek Lift	蘋果肌
+	Slim Body	瘦身
+	Waist Slim	瘦腰
+	Slim Legs	瘦腿
+	Leg Lengthen	拉長腿
+	Head Ratio	頭身比
+	Eye Detail	眼部細節
+	Bust Size	豐胸
+	Bust Lift	胸部提升
+	Cleavage	乳溝
+	Hip Curve	臀部曲線
+	Beautify	美顏
+@id	filter.beautify.portrait	人像美顏…
+@id	filter.beautify.skin	人像美肌…
+@id	filter.beautify.reshape	人像塑形…
+	Skin Tone	膚色均勻
+	Natural	自然
+	Cosplay	二次元
+	Editorial	時尚
