@@ -338,11 +338,40 @@ pub(crate) fn remember(app: &mut PhotocraftApp, command: &str, fields: &Map<Stri
     }
 }
 
+fn is_beautify(command: &str) -> bool {
+    matches!(command, "filter.beautify.portrait" | "filter.beautify.skin" | "filter.beautify.reshape")
+}
+
+/// Presets fill only the controls this dialog exposes. Submit explicit values, not a preset seed
+/// that could also enable hidden controls (for example skin work from the Reshape dialog).
+fn apply_beautify_preset(command: &str, preset: &str, fields: &mut Map<String, Value>) {
+    if preset.is_empty() {
+        return;
+    }
+    let Some(spec) = photocraft_engine::commands::find(command) else { return };
+    let Ok(params) = photocraft_engine::beauty_cmds::beauty_params(command, &json!({"preset": preset})) else { return };
+    let Ok(values) = serde_json::to_value(params) else { return };
+    for p in parse_spec(spec.params) {
+        if !matches!(p.kind, Kind::Range { .. }) {
+            continue;
+        }
+        let key = if p.key == "skinTone" {
+            "skin_tone_uniform".into()
+        } else {
+            p.key.chars().flat_map(|c| if c.is_ascii_uppercase() { vec!['_', c.to_ascii_lowercase()] } else { vec![c] }).collect::<String>()
+        };
+        if let Some(value) = values.get(&key) {
+            fields.insert(p.key, value.clone());
+        }
+    }
+}
+
 /// Schema-default values for one param of `command` (open and Alt+Reset share this).
 fn default_value(app: &PhotocraftApp, command: &str, p: &Param) -> Option<Value> {
     Some(match &p.kind {
         Kind::Range { default, .. } if command == "image.mode.indexedColor" && p.key == "colors" => json!(default.round().clamp(2.0, 256.0) as u32),
         Kind::Range { default, .. } => json!(default),
+        Kind::Choice { .. } if is_beautify(command) && p.key == "preset" => json!(""),
         Kind::Choice { options, default } => {
             let initial = default.as_deref().or_else(|| options.first().map(String::as_str)).unwrap_or("");
             json!(initial)
@@ -673,6 +702,7 @@ pub fn body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
                 } else {
                     ""
                 };
+                let previous = v;
                 ui.scope(|ui| {
                     if !enabled {
                         ui.disable();
@@ -702,6 +732,9 @@ pub fn body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
                 });
                 // Small ranges (0–1 thresholds and centres) keep the two decimals their field shows.
                 let scale = if max - min <= 10.0 { 100.0 } else { 10.0 };
+                if is_beautify(&cmd) && v != previous {
+                    f.insert("preset".into(), json!(""));
+                }
                 f.insert(p.key, json!((v * scale).round() / scale));
             }
             Kind::Choice { options, default } => {
@@ -711,6 +744,9 @@ pub fn body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
                     let mut cur = f.get(&p.key).and_then(Value::as_str).unwrap_or(initial).to_string();
                     let labels: Vec<String> = options.iter().map(|o| choice_label(o)).collect();
                     let mut opts: Vec<(String, &str)> = options.iter().cloned().zip(labels.iter().map(String::as_str)).collect();
+                    if is_beautify(&cmd) && p.key == "preset" {
+                        opts.insert(0, (String::new(), tl!("Custom")));
+                    }
                     // Like Photoshop, the profile menus also list every profile installed in
                     // the system (printer and paper profiles), by description.
                     let installed = if p.key == "profile" && PROFILE_DIALOGS.contains(&cmd.as_str()) {
@@ -731,7 +767,11 @@ pub fn body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
                     if p.key == "profile" && PROFILE_DIALOGS.contains(&cmd.as_str()) && !opts.iter().any(|(v, _)| *v == cur) {
                         opts.push((cur.clone(), stem.as_str()));
                     }
+                    let previous = cur.clone();
                     crate::widgets::dropdown(ui, &format!("flt-{cmd}-{}", p.key), &mut cur, &opts, 170.0);
+                    if is_beautify(&cmd) && p.key == "preset" && cur != previous {
+                        apply_beautify_preset(&cmd, &cur, f);
+                    }
                     f.insert(p.key.clone(), json!(cur));
                 });
             }
@@ -856,7 +896,12 @@ fn random_seed(entropy: u64, current: i64) -> i64 {
 /// User-facing params (strip the dialog's private `__` keys).
 pub fn params_of(f: &Map<String, Value>) -> Value {
     // A document picker left at "None" (-1) means "not given".
-    let unset = |k: &str, v: &Value| k == "mapDocument" && v.as_i64() == Some(-1);
+    let command = f.get("__command").and_then(Value::as_str).unwrap_or("");
+    let explicit_beautify = is_beautify(command)
+        && photocraft_engine::commands::find(command).is_some_and(|spec| {
+            parse_spec(spec.params).iter().filter(|p| matches!(p.kind, Kind::Range { .. })).all(|p| f.get(&p.key).is_some_and(Value::is_number))
+        });
+    let unset = |k: &str, v: &Value| (k == "mapDocument" && v.as_i64() == Some(-1)) || (explicit_beautify && k == "preset");
     Value::Object(f.iter().filter(|(k, v)| !k.starts_with("__") && !unset(k, v)).map(|(k, v)| (k.clone(), v.clone())).collect())
 }
 
@@ -1144,6 +1189,57 @@ mod tests {
         assert_eq!(f["radius"], json!(1.0));
         assert!(f.contains_key("__filter"));
         assert!(app.ui.dialogs.iter().any(|d| d.id == id));
+    }
+
+    #[test]
+    fn beautify_custom_defaults_reset_and_remembered_values_are_explicit() {
+        for command in ["filter.beautify.portrait", "filter.beautify.skin", "filter.beautify.reshape"] {
+            let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+            let id = open(&mut app, command).unwrap();
+            let mut fields = app.ui.dialog_mut(id).unwrap().fields.clone();
+            assert_eq!(fields["preset"], json!(""));
+            let params = params_of(&fields);
+            assert!(params.get("preset").is_none());
+            assert!(photocraft_engine::beauty_cmds::beauty_params(command, &params).unwrap().is_identity(), "{command}: {params}");
+            let key = if command.ends_with("reshape") { "jawSlim" } else { "skinSmooth" };
+            fields.insert(key.into(), json!(37.5));
+            fields.insert("preset".into(), json!("Cosplay"));
+            remember(&mut app, command, &fields);
+            let reopened = open(&mut app, command).unwrap();
+            let reopened = params_of(&app.ui.dialog_mut(reopened).unwrap().fields);
+            assert_eq!(reopened[key], json!(37.5));
+            assert!(reopened.get("preset").is_none());
+            reset_fields(&app, &mut fields);
+            assert_eq!(fields[key], json!(0.0));
+            assert_eq!(fields["preset"], json!(""));
+            assert!(photocraft_engine::beauty_cmds::beauty_params(command, &params_of(&fields)).unwrap().is_identity());
+            if command != "filter.beautify.reshape" {
+                assert_eq!(fields["textureKeep"], json!(85.0));
+            }
+        }
+    }
+
+    #[test]
+    fn beautify_presets_populate_visible_controls_without_hidden_effects() {
+        for command in ["filter.beautify.portrait", "filter.beautify.skin", "filter.beautify.reshape"] {
+            let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+            let id = open(&mut app, command).unwrap();
+            let mut fields = app.ui.dialog_mut(id).unwrap().fields.clone();
+            apply_beautify_preset(command, "Cosplay", &mut fields);
+            let params = photocraft_engine::beauty_cmds::beauty_params(command, &params_of(&fields)).unwrap();
+            if command.ends_with("reshape") {
+                assert_eq!(params.jaw_slim, 12.0);
+                assert!(!params.has_skin_work());
+                assert!(!params.has_light_work());
+            } else {
+                assert_eq!(params.skin_smooth, 55.0);
+                assert_eq!(params.skin_tone_uniform, 30.0);
+                assert_eq!(params.texture_keep, 60.0);
+                if command.ends_with("skin") {
+                    assert!(!params.has_geometry());
+                }
+            }
+        }
     }
 
     #[test]

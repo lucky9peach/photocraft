@@ -20,7 +20,7 @@ REPO=$PWD WORK=/tmp/pl-app ICON_OUT=/tmp/pl-icon python3 packaging/macos/portrai
 ditto /tmp/pl-app/PortraitLab.app /Applications/PortraitLab.app   # 放到“应用程序”
 ```
 
-双击打开后菜单栏 **滤镜 › Beautify** 就是三个原生命令（人脸/人体识别由 Apple Vision 提供，
+双击打开后菜单栏 **滤镜 › 美颜** 就是三个原生命令（人脸/人体识别由 Apple Vision 提供，
 零权重、零联网）。下面的 §1–§8 是开发/命令行路线，调试时更好用。
 
 ## 1. 环境准备（macOS，一次性）
@@ -56,10 +56,10 @@ cargo build -p photocraft-cli
 
 1. `cargo run -p photocraft`，打开一张人像照片。
 2. 菜单 **Filter › Beautify › Portrait Beautify…**，对话框里拖滑块，
-   预览实时更新（同一张照片第二次渲染约 10ms 级，检测结果已缓存）。
-3. 常用起点：`preset = Natural`（自然）/ `Cosplay`（含几何微调）/
-   `Editorial`（质感）；再单独微调某个滑块覆盖预设值。
-4. 撤销：普通历史记录撤销即可（`s.undo()` 路径已测试）。
+   预览实时更新；检测结果按图像内容缓存。
+3. 默认“自定”不附带效果；选择 `Natural`（自然）/ `Cosplay`（二次元）/
+   `Editorial`（质感）会填入可见滑块，之后可单独微调。提交失败保留参数和预览并显示错误。
+4. 撤销：普通历史记录撤销即可；取消不会修改原图。
 
 ## 4. 试用方式二：命令行（推荐先跑通）
 
@@ -103,8 +103,8 @@ $CLI run portrait.jpg \
 
 | 分组 | 参数（JSON key） | 说明 |
 |---|---|---|
-| 预设 | `preset` | `Natural`/`Cosplay`/`Editorial`，先铺底再被显式滑块覆盖 |
-| 皮肤 | `skinSmooth` + `textureKeep` | 边缘保留磨皮；`textureKeep` 越高越不塑料 |
+| 预设 | `preset` | GUI 默认自定；预设填入可见滑块，显式值用于预览与确定 |
+| 皮肤 | `skinSmooth` + `textureKeep` | 边缘保留磨皮；保留质感 100 时此项不平滑细节 |
 | 皮肤 | `skinTone` | Lab 肤色均匀 |
 | 皮肤 | `blemishFade` | 瑕疵淡化（3px 以上斑点） |
 | 皮肤 | `nasolabialFade` | 法令纹局部平滑 |
@@ -115,6 +115,15 @@ $CLI run portrait.jpg \
 | 美体 | `headRatio` | 头身比微调（保守） |
 | 光照 | `brighten` / `saturation` | 脸+身体皮肤提亮 / 饱和 |
 | 光照 | `eyeDetail` / `sharpen` | 眼部 CLAHE 细节 / 锐化 |
+| 鼻部 | `noseContour` | 鼻梁微亮、鼻侧微暗，与鼻翼几何收窄独立 |
+| 光照 | `subjectBrighten` | 人物智能提亮，保留色彩比例、限制高光增益，不磨皮 |
+| 光照 | `virtualLight` | 人物遮罩内局部柔光强度，不磨皮 |
+| 光照 | `lightX` / `lightY` / `lightSize` | 光源水平/垂直位置、光照范围 |
+
+磨糊来源包括“磨皮”“肤色均匀”“祛斑”“法令纹淡化”，后两者也有局部平滑。
+只补光时将这四项设为 0；可从人物智能提亮 20–40、虚拟灯光 15–30 开始。
+身体变形排除头部区域；只有主动调“头身比”才会改变头部。
+虚拟灯光为本地二维光影增强，不重建三维深度或遮挡。
 
 几何类默认全 0（关闭），皮肤/光照按需开。一次跑多个命令可串行：
 `run in.jpg --cmd A --params '{…}' --cmd B --params '{…}' --out out.png`。
@@ -123,7 +132,7 @@ $CLI run portrait.jpg \
 
 - **macOS 效果最全**（Apple Vision 检测）。Linux/Windows 当前降级为
   chroma 肤色回退：皮肤/光照可用，几何 reshape 跳过（ONNX 解码器后续补）。
-- 工作区超过 3600 万像素会拒绝（内存保护）；28MP 已验证通过。
+- 工作区超过 5000 万像素会拒绝（内存保护）；支持 5504×8256 原尺寸照片。
 - `legLengthen` 保守：检测不到双腿分叉（裙装/并腿/侧身）时自动置 0，
   只做瘦腿，避免拉伸接缝伪影。
 - 背景像素：warp 经人物蒙版门控，实测全身像背景角落逐像素一致（0.0）。
@@ -131,8 +140,8 @@ $CLI run portrait.jpg \
 ## 7. 跑测试（改代码后）
 
 ```bash
-cargo test -p photocraft-beauty              # 52 passed
-cargo test -p photocraft-engine --lib beauty_cmds  # 10 passed
+cargo test -p photocraft-beauty --lib         # 69 passed
+cargo test -p photocraft-engine --lib beauty_cmds  # 12 passed
 cargo clippy -p photocraft-beauty --all-targets
 cargo fmt --check -p photocraft-beauty -p photocraft-engine
 cargo xtask layers                            # 层级检查

@@ -249,20 +249,25 @@ pub fn face_warps(face: &FaceGeom, img_w: usize, img_h: usize, params: &FaceWarp
         }
     }
 
-    // F6/N2 nose: gentle horizontal narrowing.
+    // Nasal wings: two inward Liquify strokes in the rotated eye frame.
+    // The former broad squeeze moved the alae by barely a pixel at normal strengths.
     let nose = s01(params.nose_refine);
     if nose > 0.0 {
-        let eye_dist = face.left_eye.dist(face.right_eye).max(1e-4) * min_dim;
+        let (lx, ly) = px(face.left_eye);
+        let (rx, ry) = px(face.right_eye);
+        let eye_dist = (rx - lx).hypot(ry - ly).max(1.0);
+        let (ux, uy) = ((rx - lx) / eye_dist, (ry - ly) / eye_dist);
         let (nx, ny) = px(face.nose_tip);
-        out.push(Primitive::Squeeze(SqueezeSpec {
-            cx: nx,
-            cy: ny,
-            rx: eye_dist * 0.45,
-            ry: eye_dist * 0.85,
-            strength: nose * 0.85,
-            horizontal: true,
-            angle_rad: 0.0,
-        }));
+        for side in [-1.0f32, 1.0] {
+            out.push(Primitive::Pull(PullSpec {
+                x: nx + side * ux * eye_dist * 0.21,
+                y: ny + side * uy * eye_dist * 0.21,
+                vx: -side * ux,
+                vy: -side * uy,
+                amount: eye_dist * 0.065 * nose,
+                radius: eye_dist * 0.27,
+            }));
+        }
     }
 
     // N3 mouth corners: a small up-and-out lift.
@@ -1057,7 +1062,7 @@ mod tests {
         }
         assert_eq!(kinds[0], 2, "two eye radials");
         assert!(kinds[1] >= 6, "jaw + vline + mouth + cheek pulls");
-        assert_eq!(kinds[2], 1, "nose squeeze");
+        assert_eq!(kinds[2], 0, "nasal wings use targeted pulls rather than a broad squeeze");
         assert_eq!(kinds[3], 0, "no stretches on faces");
         // Zero params => no primitives.
         assert!(face_warps(&f, 400, 500, &FaceWarpParams::default()).unwrap().is_empty());
@@ -1072,6 +1077,29 @@ mod tests {
             {
                 let inward = if spec.x < 200.0 { spec.vx > 0.0 } else { spec.vx < 0.0 };
                 assert!(inward, "v-line must pull inward: {spec:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn nasal_wings_move_inward_without_moving_eyes() {
+        let f = sample_face();
+        let mut field = Field::new(400, 500).unwrap();
+        let p = FaceWarpParams { nose_refine: 100.0, ..FaceWarpParams::default() };
+        let prims = face_warps(&f, 400, 500, &p).unwrap();
+        assert_eq!(prims.len(), 2);
+        for prim in &prims {
+            prim.apply(&mut field, None).unwrap();
+        }
+        assert!(field.max_abs() > 2.0, "visible nasal-wing displacement at full strength");
+        for eye in [f.left_eye, f.right_eye] {
+            let i = (eye.y * 500.0) as usize * 400 + (eye.x * 400.0) as usize;
+            assert_eq!(field.dx()[i], 0.0);
+            assert_eq!(field.dy()[i], 0.0);
+        }
+        for prim in prims {
+            if let Primitive::Pull(p) = prim {
+                assert!((p.x - f.nose_tip.x * 400.0) * p.vx < 0.0);
             }
         }
     }

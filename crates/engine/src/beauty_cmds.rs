@@ -24,6 +24,7 @@ use photocraft_beauty::geom::{
 };
 use photocraft_beauty::light::{adjust_saturation, brighten, enhance_eye_detail, sharpen};
 use photocraft_beauty::mask::{convex_hull, feather_box, fill_convex_poly, resample_bilinear, subtract, union_max};
+use photocraft_beauty::relight::{self, RelightSpec};
 use photocraft_beauty::skin::{SmoothSpec, fade_blemishes, smooth_skin, uniform_tone};
 use photocraft_beauty::warp::Field;
 use photocraft_beauty::{BeautifyParams, Error as BeautyError};
@@ -41,9 +42,8 @@ pub const PORTRAIT: &str = "filter.beautify.portrait";
 pub const SKIN: &str = "filter.beautify.skin";
 pub const RESHAPE: &str = "filter.beautify.reshape";
 
-/// Refuse work areas above this many pixels: the pipeline holds several f32
-/// buffers (image + masks), so ~36 MP caps peak RSS near 2 GB for RGBA.
-const MAX_PIXELS: usize = 36_000_000;
+/// Covers 45 MP camera originals; keep a bounded allocation budget for the f32 pipeline.
+const MAX_PIXELS: usize = 50_000_000;
 
 /// Detection cache capacity (entries); evicted wholesale when full. Photos are
 /// processed one at a time, so a tiny cache covers slider scrubbing.
@@ -68,7 +68,7 @@ fn s01_opt(p: &Value, k: &str) -> Option<f32> {
 /// old smart-filter records keep decoding.
 pub fn beauty_params(cmd: &str, p: &Value) -> Result<BeautifyParams> {
     let mut out = match p.get("preset").and_then(Value::as_str) {
-        None | Some("") => BeautifyParams::default(),
+        None | Some("") | Some("Manual") => BeautifyParams::default(),
         Some(name) => photocraft_beauty::params::builtin(name).map_err(|e| bad(cmd, format!("unknown preset `{name}` ({e})")))?,
     };
     if let Some(v) = s01_opt(p, "skinSmooth") {
@@ -94,6 +94,24 @@ pub fn beauty_params(cmd: &str, p: &Value) -> Result<BeautifyParams> {
     }
     if let Some(v) = s01_opt(p, "noseRefine") {
         out.nose_refine = v;
+    }
+    if let Some(v) = s01_opt(p, "noseContour") {
+        out.nose_contour = v;
+    }
+    if let Some(v) = s01_opt(p, "subjectBrighten") {
+        out.subject_brighten = v;
+    }
+    if let Some(v) = s01_opt(p, "virtualLight") {
+        out.virtual_light = v;
+    }
+    if let Some(v) = s01_opt(p, "lightX") {
+        out.light_x = v;
+    }
+    if let Some(v) = s01_opt(p, "lightY") {
+        out.light_y = v;
+    }
+    if let Some(v) = s01_opt(p, "lightSize") {
+        out.light_size = v;
     }
     if let Some(v) = s01_opt(p, "vline") {
         out.vline = v;
@@ -476,6 +494,36 @@ fn neck_for_body(faces: &[FaceGeom], body: &BodyGeom) -> Point {
     }
     Point { x: cx.clamp(0.0, 1.0), y: (body.bbox[1] + (body.bbox[3] - body.bbox[1]) * 0.15).clamp(0.0, 1.0) }
 }
+/// Protect the entire head (not merely skin pixels) from torso/leg deformation.
+/// The plateau includes the face box; feathering happens outside it, toward the neck.
+fn body_only_gate(det: &CachedDetection, person: Option<&[f32]>, w: usize, h: usize) -> Vec<f32> {
+    let mut gate = person.map_or_else(|| vec![1.0; w * h], <[f32]>::to_vec);
+    let mut boxes: Vec<[f32; 4]> = det.faces.iter().map(|f| f.bbox).collect();
+    // Even if face detection fails, keep the pose-estimated head off-limits.
+    for body in &det.bodies {
+        if let Some(nose) = body.joints.nose.filter(|p| p.is_valid()) {
+            let near_face = det.faces.iter().any(|f| nose.x >= f.bbox[0] && nose.x <= f.bbox[2] && nose.y >= f.bbox[1] && nose.y <= f.bbox[3]);
+            if !near_face {
+                let half = (body.bbox[2] - body.bbox[0]).abs() * 0.22;
+                boxes.push([nose.x - half, nose.y - half, nose.x + half, nose.y + half * 1.25]);
+            }
+        }
+    }
+    for [x0, y0, x1, y1] in boxes {
+        let fw = (x1 - x0).max(0.001);
+        let fh = (y1 - y0).max(0.001);
+        let cx = (x0 + x1) * 0.5;
+        let cy = y0 + fh * 0.35;
+        for (i, m) in gate.iter_mut().enumerate() {
+            let x = (i % w) as f32 / w as f32;
+            let y = (i / w) as f32 / h as f32;
+            let r = ((x - cx) / (fw * 0.78)).hypot((y - cy) / (fh * 0.95));
+            let t = ((r - 1.0) / 0.25).clamp(0.0, 1.0);
+            *m *= t * t * (3.0 - 2.0 * t);
+        }
+    }
+    gate
+}
 
 /// Applies geometry warps to the image and its masks. Returns the warped
 /// image (or a copy when there is nothing to warp).
@@ -520,6 +568,7 @@ fn apply_warps(
     }
     let mut body_field = Field::new(w, h).map_err(|e| beauty_err(cmd, e))?;
     if want_body {
+        let body_gate = body_only_gate(det, masks.person.as_deref(), w, h);
         for body in &det.bodies {
             // Complete joints from the silhouette (pose backends often miss
             // the legs); lengthening only with a split silhouette or full
@@ -527,13 +576,22 @@ fn apply_warps(
             let neck = neck_for_body(&det.faces, body);
             let (joints, legs_split) = complete_body_joints(&body.joints, masks.person.as_deref(), w, h, neck).map_err(|e| beauty_err(cmd, e))?;
             let mut bw = bw;
+            // Head proportion is explicit and independent; body slimming never includes it.
+            let head_ratio = bw.head_ratio;
+            bw.head_ratio = 0.0;
             if !legs_split {
                 bw.leg_lengthen = 0.0;
             }
             let completed = BodyGeom { bbox: body.bbox, joints };
             let prims = body_warps(&completed, w, h, &bw).map_err(|e| beauty_err(cmd, e))?;
             for prim in &prims {
-                prim.apply(&mut body_field, masks.person.as_deref()).map_err(|e| beauty_err(cmd, e))?;
+                prim.apply(&mut body_field, Some(&body_gate)).map_err(|e| beauty_err(cmd, e))?;
+            }
+            if head_ratio > 0.0 {
+                let head = BodyWarpParams { head_ratio, ..BodyWarpParams::default() };
+                for prim in body_warps(&completed, w, h, &head).map_err(|e| beauty_err(cmd, e))? {
+                    prim.apply(&mut body_field, masks.person.as_deref()).map_err(|e| beauty_err(cmd, e))?;
+                }
             }
         }
     }
@@ -547,11 +605,15 @@ fn apply_warps(
         let warped = field.remap(mask, 1).map_err(|e| beauty_err(cmd, e))?;
         *mask = warped;
     }
+    if let Some(person) = &mut masks.person {
+        *person = field.remap(person, 1).map_err(|e| beauty_err(cmd, e))?;
+    }
     field.remap(img, ch).map_err(|e| beauty_err(cmd, e))
 }
 
 /// Applies skin + light work to the (possibly warped) image.
-fn apply_skin_light(cmd: &str, params: &BeautifyParams, masks: &WorkMasks, img: &[f32], w: usize, h: usize, ch: usize) -> Result<Vec<f32>> {
+#[allow(clippy::too_many_arguments)]
+fn apply_skin_light(cmd: &str, params: &BeautifyParams, masks: &WorkMasks, faces: &[FaceGeom], img: &[f32], w: usize, h: usize, ch: usize) -> Result<Vec<f32>> {
     let min_dim = w.min(h);
     let smooth_r = (min_dim / 120).clamp(2, 10);
     let mut cur = img.to_vec();
@@ -580,6 +642,18 @@ fn apply_skin_light(cmd: &str, params: &BeautifyParams, masks: &WorkMasks, img: 
     }
     if params.sharpen > 0.0 {
         cur = sharpen(&cur, w, h, ch, &masks.skin, params.sharpen / 100.0, 2).map_err(|e| beauty_err(cmd, e))?;
+    }
+    if params.nose_contour > 0.0 || params.subject_brighten > 0.0 || params.virtual_light > 0.0 {
+        let spec = RelightSpec {
+            nose_contour: params.nose_contour / 100.0,
+            subject_brighten: params.subject_brighten / 100.0,
+            virtual_light: params.virtual_light / 100.0,
+            light_x: params.light_x / 100.0,
+            light_y: params.light_y / 100.0,
+            light_size: params.light_size / 100.0,
+        };
+        let person = masks.person.as_deref().unwrap_or(&masks.face_gate);
+        cur = relight::apply(&cur, w, h, ch, person, &masks.skin, faces, &spec).map_err(|e| beauty_err(cmd, e))?;
     }
     Ok(cur)
 }
@@ -615,14 +689,17 @@ fn beautify_surface(id: &str, params: &BeautifyParams, surf: &Surface, canvas: R
     let bodies = det.bodies.len();
 
     let do_geom = matches!(scope, Scope::Reshape | Scope::Full) && params.has_geometry();
-    let do_skin = matches!(scope, Scope::Skin | Scope::Full) && (params.has_skin_work() || params.has_light_work());
+    let do_skin = (matches!(scope, Scope::Skin | Scope::Full) && (params.has_skin_work() || params.has_light_work()))
+        || (matches!(scope, Scope::Reshape) && params.nose_contour > 0.0);
     if !do_geom && !do_skin {
         return Ok(BeautifyOutcome { surface: surf.clone(), faces, bodies, cache_hit });
     }
     let mut masks = build_masks(id, &det, &img, w, h, ch, params.nasolabial_fade > 0.0 && do_skin)?;
     let mut cur = if do_geom { apply_warps(id, params, &det, &mut masks, &img, w, h, ch)? } else { img };
     if do_skin {
-        cur = apply_skin_light(id, params, &masks, &cur, w, h, ch)?;
+        let shape_only = BeautifyParams { nose_contour: params.nose_contour, ..BeautifyParams::default() };
+        let light_params = if matches!(scope, Scope::Reshape) { &shape_only } else { params };
+        cur = apply_skin_light(id, light_params, &masks, &det.faces, &cur, w, h, ch)?;
     }
     let mut out = surf.clone();
     out.write_region(work, &cur);
@@ -739,9 +816,9 @@ fn run_reshape(s: &mut Session, p: &Value) -> Result<Value> {
     run(RESHAPE, "Portrait Reshape", s, p)
 }
 
-const SKIN_DOC: &str = r##"{"preset":"Natural|Cosplay|Editorial","skinSmooth":0..100=0,"skinTone":0..100=0,"blemishFade":0..100=0,"textureKeep":0..100=70,"nasolabialFade":0..100=0,"brighten":0..100=0,"saturation":-100..100=0,"eyeDetail":0..100=0,"sharpen":0..100=0}"##;
-const RESHAPE_DOC: &str = r##"{"preset":"Natural|Cosplay|Editorial","eyeEnlarge":0..100=0,"jawSlim":0..100=0,"noseRefine":0..100=0,"vline":0..100=0,"mouthLift":0..100=0,"cheekLift":0..100=0,"slimBody":0..100=0,"waistSlim":0..100=0,"slimLegs":0..100=0,"legLengthen":0..100=0,"headRatio":0..100=0,"bustSize":0..100=0,"bustLift":0..100=0,"cleavage":0..100=0,"hipCurve":0..100=0}"##;
-const PORTRAIT_DOC: &str = r##"{"preset":"Natural|Cosplay|Editorial","skinSmooth":0..100=0,"skinTone":0..100=0,"blemishFade":0..100=0,"textureKeep":0..100=70,"nasolabialFade":0..100=0,"eyeEnlarge":0..100=0,"jawSlim":0..100=0,"noseRefine":0..100=0,"vline":0..100=0,"mouthLift":0..100=0,"cheekLift":0..100=0,"slimBody":0..100=0,"waistSlim":0..100=0,"slimLegs":0..100=0,"legLengthen":0..100=0,"headRatio":0..100=0,"bustSize":0..100=0,"bustLift":0..100=0,"cleavage":0..100=0,"hipCurve":0..100=0,"brighten":0..100=0,"saturation":-100..100=0,"eyeDetail":0..100=0,"sharpen":0..100=0}"##;
+const SKIN_DOC: &str = r##"{"preset":"Manual|Natural|Cosplay|Editorial","skinSmooth":0..100=0,"skinTone":0..100=0,"blemishFade":0..100=0,"textureKeep":0..100=85,"nasolabialFade":0..100=0,"brighten":0..100=0,"subjectBrighten":0..100=0,"virtualLight":0..100=0,"lightX":0..100=30,"lightY":0..100=20,"lightSize":0..100=65,"saturation":-100..100=0,"eyeDetail":0..100=0,"sharpen":0..100=0}"##;
+const RESHAPE_DOC: &str = r##"{"preset":"Manual|Natural|Cosplay|Editorial","eyeEnlarge":0..100=0,"jawSlim":0..100=0,"noseRefine":0..100=0,"noseContour":0..100=0,"vline":0..100=0,"mouthLift":0..100=0,"cheekLift":0..100=0,"slimBody":0..100=0,"waistSlim":0..100=0,"slimLegs":0..100=0,"legLengthen":0..100=0,"headRatio":0..100=0,"bustSize":0..100=0,"bustLift":0..100=0,"cleavage":0..100=0,"hipCurve":0..100=0}"##;
+const PORTRAIT_DOC: &str = r##"{"preset":"Manual|Natural|Cosplay|Editorial","skinSmooth":0..100=0,"skinTone":0..100=0,"blemishFade":0..100=0,"textureKeep":0..100=85,"nasolabialFade":0..100=0,"eyeEnlarge":0..100=0,"jawSlim":0..100=0,"noseRefine":0..100=0,"noseContour":0..100=0,"vline":0..100=0,"mouthLift":0..100=0,"cheekLift":0..100=0,"slimBody":0..100=0,"waistSlim":0..100=0,"slimLegs":0..100=0,"legLengthen":0..100=0,"headRatio":0..100=0,"bustSize":0..100=0,"bustLift":0..100=0,"cleavage":0..100=0,"hipCurve":0..100=0,"brighten":0..100=0,"subjectBrighten":0..100=0,"virtualLight":0..100=0,"lightX":0..100=30,"lightY":0..100=20,"lightSize":0..100=65,"saturation":-100..100=0,"eyeDetail":0..100=0,"sharpen":0..100=0}"##;
 
 /// The command specs of this module.
 pub fn specs() -> Vec<CommandSpec> {
@@ -782,6 +859,63 @@ pub fn specs() -> Vec<CommandSpec> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn body_slim_preserves_face_even_with_overlapping_torso() {
+        let face = FaceGeom::from_sparse(
+            [0.30, 0.10, 0.70, 0.40],
+            Point { x: 0.40, y: 0.20 },
+            Point { x: 0.60, y: 0.20 },
+            Point { x: 0.50, y: 0.28 },
+            Point { x: 0.44, y: 0.33 },
+            Point { x: 0.56, y: 0.33 },
+        )
+        .unwrap();
+        let body = BodyGeom {
+            bbox: [0.2, 0.1, 0.8, 0.98],
+            joints: photocraft_beauty::geom::Joints {
+                nose: Some(Point { x: 0.5, y: 0.28 }),
+                left_shoulder: Some(Point { x: 0.25, y: 0.30 }),
+                right_shoulder: Some(Point { x: 0.75, y: 0.30 }),
+                left_hip: Some(Point { x: 0.35, y: 0.60 }),
+                right_hip: Some(Point { x: 0.65, y: 0.60 }),
+                ..Default::default()
+            },
+        };
+        let det = CachedDetection { faces: vec![face], bodies: vec![body], person_mask: None };
+        let (w, h) = (100, 120);
+        let img: Vec<f32> = (0..w * h * 3).map(|i| (i % 251) as f32 / 251.0).collect();
+        let mut masks =
+            WorkMasks { skin: vec![0.0; w * h], eyes: vec![0.0; w * h], folds: vec![0.0; w * h], person: Some(vec![1.0; w * h]), face_gate: vec![0.0; w * h] };
+        let p = BeautifyParams { slim_body: 100.0, waist_slim: 100.0, ..Default::default() };
+        let out = apply_warps(RESHAPE, &p, &det, &mut masks, &img, w, h, 3).unwrap();
+        for y in 12..48 {
+            for x in 30..70 {
+                let i = (y * w + x) * 3;
+                assert_eq!(&out[i..i + 3], &img[i..i + 3], "body work changed face at {x},{y}");
+            }
+        }
+        assert_ne!(out, img, "body work must still affect the torso");
+    }
+
+    #[test]
+    fn manual_preset_and_lighting_params_are_independent() {
+        let p = beauty_params(
+            PORTRAIT,
+            &json!({"preset":"Manual","slimBody":55,"subjectBrighten":40,"virtualLight":25,"lightX":15,"lightY":20,"lightSize":70,"noseContour":30}),
+        )
+        .unwrap();
+        assert_eq!(p.jaw_slim, 0.0);
+        assert_eq!(p.skin_smooth, 0.0);
+        assert_eq!(p.nose_refine, 0.0);
+        assert_eq!(p.slim_body, 55.0);
+        assert_eq!(p.subject_brighten, 40.0);
+        assert_eq!(p.virtual_light, 25.0);
+        assert_eq!(p.light_x, 15.0);
+        assert_eq!(p.light_y, 20.0);
+        assert_eq!(p.light_size, 70.0);
+        assert_eq!(p.nose_contour, 30.0);
+    }
     use photocraft_beauty::geom::Point;
 
     fn session() -> Session {

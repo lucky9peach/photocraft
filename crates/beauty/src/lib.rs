@@ -18,6 +18,7 @@ pub mod geom;
 pub mod light;
 pub mod mask;
 pub mod params;
+pub mod relight;
 pub mod skin;
 pub mod warp;
 

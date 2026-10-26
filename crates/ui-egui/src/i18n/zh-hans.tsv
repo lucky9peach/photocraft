@@ -2832,7 +2832,7 @@ curves	Smooth	平滑
 	Skin Only	仅肤色
 	Eye Enlarge	放大眼睛
 	Jaw Slim	瘦脸
-	Nose Refine	鼻形微调
+	Nose Refine	鼻翼收窄
 	Vline	V 脸
 	Mouth Lift	嘴角上扬
 	Cheek Lift	苹果肌
@@ -2854,3 +2854,10 @@ curves	Smooth	平滑
 	Natural	自然
 	Cosplay	二次元
 	Editorial	时尚
+	Nose Contour	鼻部立体
+	Subject Brighten	人物智能提亮
+	Virtual Light	虚拟灯光
+	Light X	光源水平位置
+	Light Y	光源垂直位置
+	Light Size	光照范围
+	Manual	手动（无额外效果）

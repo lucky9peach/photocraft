@@ -636,6 +636,15 @@ pub fn confirm(app: &mut PhotocraftApp, id: u64) -> Result<Value, String> {
             };
             let (cmd, params) = crate::smart_ui::confirm_command(&d.fields, cmd, crate::filter_dialog::params_of(&d.fields));
             let result = app.run(&cmd, params.clone());
+            if let Err(error) = &result {
+                // A proxy can preview successfully while the full-size command fails. Keep the
+                // exact fields and preview for correction/retry instead of silently reverting.
+                if d.fields.contains_key("__filter") {
+                    app.ui.dialogs.push(d);
+                    crate::notices::error(app, error.clone());
+                    return result;
+                }
+            }
             // A filter that runs as a background job keeps its preview on screen until the job
             // lands (`canvas::committed_filter_preview`) instead of flashing the unfiltered image.
             let running = app
@@ -730,6 +739,69 @@ mod tests {
         };
         app.filter_preview = Some(crate::filter_dialog::FilterPreview { key, result: result.map(std::sync::Arc::new), committing: false });
         (app, id)
+    }
+
+    #[test]
+    fn beautify_confirm_matches_preview_and_cancel_preserves_original() {
+        for command in ["filter.beautify.portrait", "filter.beautify.skin"] {
+            let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+            app.run("file.new", json!({"width": 16, "height": 16, "background": "#a67850"})).unwrap();
+            let pixels = |doc: &photocraft_doc::Document| doc.layers[0].surface().unwrap().read_region(doc.bounds());
+            let original = pixels(&app.session.active().unwrap().doc);
+            let id = crate::filter_dialog::open(&mut app, command).unwrap();
+            app.ui.dialog_mut(id).unwrap().fields.insert("brighten".into(), json!(35.0));
+            let params = crate::filter_dialog::params_of(&app.ui.dialog_mut(id).unwrap().fields);
+            let st = app.session.active().unwrap();
+            let preview = crate::filter_dialog::preview_document(&st.doc, st.active_layer, command, &params, 1).unwrap();
+            let expected = pixels(&preview);
+            assert_ne!(expected, original);
+            assert_eq!(pixels(&st.doc), original, "preview is not an edit");
+            confirm(&mut app, id).unwrap();
+            assert_eq!(pixels(&app.session.active().unwrap().doc), expected);
+            assert_eq!(app.session.journal.last().unwrap(), &(command.to_string(), params));
+            app.run("edit.undo", json!({})).unwrap();
+            assert_eq!(pixels(&app.session.active().unwrap().doc), original);
+            let id = crate::filter_dialog::open(&mut app, command).unwrap();
+            cancel(&mut app, id).unwrap();
+            assert_eq!(pixels(&app.session.active().unwrap().doc), original);
+        }
+    }
+
+    #[test]
+    fn beautify_failed_confirm_preserves_fields_preview_and_reports_error() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+        app.run("file.new", json!({"width": 16, "height": 16, "background": "#a67850"})).unwrap();
+        let id = crate::filter_dialog::open(&mut app, "filter.beautify.portrait").unwrap();
+        app.ui.dialog_mut(id).unwrap().fields.insert("brighten".into(), json!(35.0));
+        let fields = app.ui.dialog_mut(id).unwrap().fields.clone();
+        let params = crate::filter_dialog::params_of(&fields);
+        let st = app.session.active().unwrap();
+        let key = crate::filter_dialog::FilterPreviewKey {
+            doc: st.doc.id,
+            revision: st.revision,
+            dialog: id,
+            active: st.active_layer,
+            target: st.channel_view.target,
+            command: "filter.beautify.portrait".into(),
+            params: params.clone(),
+            k: 1,
+        };
+        let preview = crate::filter_dialog::preview_document(&st.doc, st.active_layer, &key.command, &params, 1).unwrap();
+        app.filter_preview = Some(crate::filter_dialog::FilterPreview { key, result: Some(std::sync::Arc::new(preview)), committing: false });
+        // Simulate a full-size-only failure without allocating a huge photograph.
+        app.session.active_mut().unwrap().active_layer = None;
+        let revision = app.session.active().unwrap().revision;
+        let journal = app.session.journal.len();
+        let error = confirm(&mut app, id).unwrap_err();
+        assert_eq!(app.ui.dialog_mut(id).unwrap().fields, fields);
+        assert!(app.filter_preview.as_ref().is_some_and(|p| !p.committing && p.result.is_some()));
+        assert!(app.ui.status_error);
+        assert_eq!(app.ui.status, error);
+        assert!(app.ui.notices.iter().any(|notice| notice.error));
+        assert_eq!(app.session.active().unwrap().revision, revision);
+        assert_eq!(app.session.journal.len(), journal);
+        cancel(&mut app, id).unwrap();
+        assert!(app.filter_preview.is_none());
     }
 
     #[test]

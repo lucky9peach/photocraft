@@ -100,7 +100,8 @@ pub fn smooth_skin(img: &[f32], w: usize, h: usize, ch: usize, skin_mask: &[f32]
         return Ok(img.to_vec());
     }
     let keep = if texture_keep.is_finite() { texture_keep.clamp(0.0, 1.0) } else { 0.7 };
-    let detail_w = keep * 0.5;
+    // 100% texture preservation must retain all original detail, not just half.
+    let detail_w = keep;
     let color_ch = if ch >= 3 { 3 } else { 1 };
     let mut smoothed = img.to_vec();
     for c in 0..color_ch {
@@ -231,6 +232,13 @@ mod tests {
 
     fn flat(w: usize, h: usize, ch: usize, v: f32) -> Vec<f32> {
         vec![v; w * h * ch]
+    }
+    #[test]
+    fn full_texture_preservation_is_identity() {
+        let img: Vec<f32> = (0..12 * 12 * 3).map(|i| if i % 2 == 0 { 0.35 } else { 0.65 }).collect();
+        let mask = vec![1.0; 144];
+        let spec = SmoothSpec { strength: 1.0, texture_keep: 1.0, radius: 4, eps: 0.01 };
+        assert_eq!(smooth_skin(&img, 12, 12, 3, &mask, &spec).unwrap(), img);
     }
 
     #[test]

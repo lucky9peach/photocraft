@@ -52,8 +52,32 @@ pub struct BeautifyParams {
     pub sharpen: f32,
     /// N5 nasolabial-fold fade (localized smoothing).
     pub nasolabial_fade: f32,
+    /// Local nose bridge highlight / side shading, independent of geometry.
+    #[serde(default)]
+    pub nose_contour: f32,
+    /// Highlight-protected, chroma-preserving subject fill.
+    #[serde(default)]
+    pub subject_brighten: f32,
+    /// Virtual 2D soft-light strength; positions and size use 0..100.
+    #[serde(default)]
+    pub virtual_light: f32,
+    #[serde(default = "default_light_x")]
+    pub light_x: f32,
+    #[serde(default = "default_light_y")]
+    pub light_y: f32,
+    #[serde(default = "default_light_size")]
+    pub light_size: f32,
 }
 
+fn default_light_x() -> f32 {
+    30.0
+}
+fn default_light_y() -> f32 {
+    20.0
+}
+fn default_light_size() -> f32 {
+    65.0
+}
 impl Default for BeautifyParams {
     fn default() -> Self {
         Self {
@@ -81,6 +105,12 @@ impl Default for BeautifyParams {
             eye_detail: 0.0,
             sharpen: 0.0,
             nasolabial_fade: 0.0,
+            nose_contour: 0.0,
+            subject_brighten: 0.0,
+            virtual_light: 0.0,
+            light_x: default_light_x(),
+            light_y: default_light_y(),
+            light_size: default_light_size(),
         }
     }
 }
@@ -121,6 +151,12 @@ impl BeautifyParams {
         p.eye_detail = clamp_0_100(p.eye_detail);
         p.sharpen = clamp_0_100(p.sharpen);
         p.nasolabial_fade = clamp_0_100(p.nasolabial_fade);
+        p.nose_contour = clamp_0_100(p.nose_contour);
+        p.subject_brighten = clamp_0_100(p.subject_brighten);
+        p.virtual_light = clamp_0_100(p.virtual_light);
+        p.light_x = clamp_0_100(p.light_x);
+        p.light_y = clamp_0_100(p.light_y);
+        p.light_size = clamp_0_100(p.light_size);
         p
     }
 
@@ -151,6 +187,12 @@ impl BeautifyParams {
             ("eye_detail", self.eye_detail, 0.0, 100.0),
             ("sharpen", self.sharpen, 0.0, 100.0),
             ("nasolabial_fade", self.nasolabial_fade, 0.0, 100.0),
+            ("nose_contour", self.nose_contour, 0.0, 100.0),
+            ("subject_brighten", self.subject_brighten, 0.0, 100.0),
+            ("virtual_light", self.virtual_light, 0.0, 100.0),
+            ("light_x", self.light_x, 0.0, 100.0),
+            ("light_y", self.light_y, 0.0, 100.0),
+            ("light_size", self.light_size, 0.0, 100.0),
         ];
         for (name, v, lo, hi) in pairs {
             if !v.is_finite() {
@@ -189,7 +231,13 @@ impl BeautifyParams {
 
     #[must_use]
     pub fn has_light_work(&self) -> bool {
-        self.brighten > 0.0 || self.saturation != 0.0 || self.eye_detail > 0.0 || self.sharpen > 0.0
+        self.brighten > 0.0
+            || self.saturation != 0.0
+            || self.eye_detail > 0.0
+            || self.sharpen > 0.0
+            || self.nose_contour > 0.0
+            || self.subject_brighten > 0.0
+            || self.virtual_light > 0.0
     }
 
     /// True when processing would be an exact no-op.
@@ -242,6 +290,7 @@ fn cosplay() -> BeautifyParams {
         eye_detail: 40.0,
         sharpen: 15.0,
         nasolabial_fade: 25.0,
+        ..BeautifyParams::default()
     }
 }
 
